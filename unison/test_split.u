@@ -1,0 +1,20 @@
+-- test_split.u
+use base
+
+testReplace : Text
+testReplace = Text.replace "\"" "\\\"" "hello \"world\""
+
+testToCharList : [Char]
+testToCharList = Text.toCharList "hello"
+
+testFromCharList : Text
+testFromCharList = Text.fromCharList [?\h, ?\e]
+
+testEven : Boolean
+testEven = Nat.isEven 4
+
+testFilterMap : [Text]
+testFilterMap = List.filterMap (x -> Some x) ["a"]
+
+testIndexed : [(Nat, Text)]
+testIndexed = List.indexed ["a"]

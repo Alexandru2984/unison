@@ -1,15 +1,109 @@
 -- evolution.u
 use base
 
-expand : Text -> Text
-expand text = text ++ " (expanded: we should consider the broader implications.)"
+-- =======================================================
+-- Distributed Idea Evolution Engine (Unison Core)
+-- =======================================================
+-- This file contains the deterministic business logic for
+-- mutating textual ideas. Since Unison code is content
+-- addressed, any change here creates a fundamentally new
+-- function hash in the system.
+-- =======================================================
 
+-- Helper to split text by spaces
+splitWords : Text -> [Text]
+splitWords t = Text.split ?\s t
+
+-- Helper to join text by spaces
+joinWords : [Text] -> Text
+joinWords ws = Text.join " " ws
+
+-- Removes basic punctuation from the end of a word if present
+trimPunctuation : Text -> Text
+trimPunctuation t =
+  Text.replaceAll "." "" (Text.replaceAll "," "" (Text.replaceAll "!" "" (Text.replaceAll "?" "" t)))
+
+-- =======================================================
+-- MUTATION: EXPAND
+-- Analyzes each word. If it's a "significant" word (length > 5),
+-- it deterministically elaborates on it.
+-- =======================================================
+elaborateWord : Text -> Text
+elaborateWord w =
+  clean = trimPunctuation w
+  if Text.size clean > 7 then
+    w ++ " (which represents a fundamental paradigm shift)"
+  else if Text.size clean > 5 then
+    w ++ " (an important factor)"
+  else
+    w
+
+expand : Text -> Text
+expand text =
+  words = splitWords text
+  expandedWords = List.map elaborateWord words
+  joinWords expandedWords ++ " -> Ultimately, this expands the core premise significantly."
+
+-- =======================================================
+-- MUTATION: REPHRASE
+-- Reverses the structure of the idea to create a
+-- retrospective viewpoint.
+-- =======================================================
 rephrase : Text -> Text
-rephrase text = "Rephrased: " ++ text ++ " - indeed."
+rephrase text =
+  words = splitWords text
+  reversed = List.reverse words
+  "From a retrospective view: " ++ joinWords reversed ++ "."
+
+-- =======================================================
+-- MUTATION: MUTATE KEYWORDS
+-- Identifies keywords and aggressively mutates them to
+-- emphasize their impact.
+-- =======================================================
+mutateWord : Text -> Text
+mutateWord w =
+  if Text.size w > 4 then
+    Text.toUppercase w ++ "!!"
+  else
+    w
 
 mutateKeywords : Text -> Text
-mutateKeywords text = text ++ " [mutated]"
+mutateKeywords text =
+  words = splitWords text
+  mutated = List.map mutateWord words
+  "MUTATION APPLIED: " ++ joinWords mutated
 
+-- =======================================================
+-- MUTATION: SYNTHESIZE
+-- Condenses the idea by extracting only the most critical
+-- lexical elements (deterministically chosen).
+-- =======================================================
+synthesize : Text -> Text
+synthesize text =
+  words = splitWords text
+  -- Keep every second word to "condense" it deterministically
+  indexed = List.indexed words
+  isEven : (Text, Nat) -> Boolean
+  isEven p = match p with (_, i) -> Nat.isEven i
+  keepPairs = List.filter isEven indexed
+  keep = List.map (p -> match p with (w, _) -> w) keepPairs
+  "Synthesis: " ++ joinWords keep
+
+-- =======================================================
+-- INFRASTRUCTURE
+-- Formats output safely into JSON for the Python bridge
+-- =======================================================
+escapeJsonText : Text -> Text
+escapeJsonText t = 
+  Text.replaceAll "\"" "\\\"" (Text.replaceAll "\n" " " t)
+
+formatResponse : Text -> Text -> Text
+formatResponse mutationType result =
+  "{\"mutation\": \"" ++ mutationType ++ "\", \"result\": \"" ++ escapeJsonText result ++ "\"}"
+
+-- =======================================================
+-- ENTRYPOINT
+-- =======================================================
 main : '{IO, Exception} ()
 main = do
   args = !IO.getArgs
@@ -19,6 +113,7 @@ main = do
         "expand" -> expand content
         "rephrase" -> rephrase content
         "mutate_keywords" -> mutateKeywords content
+        "synthesize" -> synthesize content
         _ -> content
-      printLine result
-    _ -> printLine "Error: Expected 2 arguments: mutationType and content"
+      printLine (formatResponse mutationType result)
+    _ -> printLine "{\"error\": \"Expected 2 arguments\"}"
