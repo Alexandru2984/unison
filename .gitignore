@@ -1,0 +1,14 @@
+node_modules/
+.venv/
+__pycache__/
+*.uc
+.env
+logs/
+.unison/
+frontend/dist/
+frontend/node_modules/
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+ucm-bin/

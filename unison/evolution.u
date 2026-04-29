@@ -1,0 +1,24 @@
+-- evolution.u
+use base
+
+expand : Text -> Text
+expand text = text ++ " (expanded: we should consider the broader implications.)"
+
+rephrase : Text -> Text
+rephrase text = "Rephrased: " ++ text ++ " - indeed."
+
+mutateKeywords : Text -> Text
+mutateKeywords text = text ++ " [mutated]"
+
+main : '{IO, Exception} ()
+main = do
+  args = !IO.getArgs
+  match args with
+    [mutationType, content] ->
+      result = match mutationType with
+        "expand" -> expand content
+        "rephrase" -> rephrase content
+        "mutate_keywords" -> mutateKeywords content
+        _ -> content
+      printLine result
+    _ -> printLine "Error: Expected 2 arguments: mutationType and content"

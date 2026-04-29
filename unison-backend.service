@@ -1,0 +1,15 @@
+[Unit]
+Description=Unison Idea Evolution Backend
+After=network.target
+
+[Service]
+User=micu
+WorkingDirectory=/home/micu/unisonTrying/backend
+ExecStart=/bin/bash /home/micu/unisonTrying/backend/run_backend.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/micu/unisonTrying/logs/backend.log
+StandardError=append:/home/micu/unisonTrying/logs/backend.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+compile main /home/micu/unisonTrying/unison/evolution.uc
+update
+load /home/micu/unisonTrying/unison/evolution.u
+compile main /home/micu/unisonTrying/unison/evolution.uc
+update
+compile main /home/micu/unisonTrying/unison/evolution.uc
+add
+load /home/micu/unisonTrying/unison/evolution.u
+compile main /home/micu/unisonTrying/unison/evolution.uc
+add
+load evolution.u
+add
+run.file evolution.u main -- expand "Hello world"
+project.create unisonProject
