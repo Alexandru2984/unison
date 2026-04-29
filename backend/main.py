@@ -2,13 +2,21 @@ import os
 import json
 import asyncio
 import subprocess
-from fastapi import FastAPI, WebSocket, HTTPException
+import logging
+from typing import Optional
+from fastapi import FastAPI, WebSocket, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 import sqlite3
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path="../.env")
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -19,6 +27,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error(f"Validation error: {exc.errors()} | Body: {await request.body()}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": str(await request.body())},
+    )
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "evolution.db")
 
@@ -42,16 +58,16 @@ def init_db():
 init_db()
 
 class IdeaRequest(BaseModel):
-    content: str = ""
-    parent_id: int = None
+    content: Optional[str] = ""
+    parent_id: Optional[int] = None
     mutation: str = "base"
 
 async def broadcast_idea(idea):
     for client in clients:
         try:
             await client.send_json(idea)
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to broadcast: {e}")
 
 @app.post("/api/idea")
 async def create_idea(req: IdeaRequest):
@@ -68,6 +84,9 @@ async def create_idea(req: IdeaRequest):
             if row:
                 source_content = row[0]
         
+        if not source_content:
+            source_content = ""
+
         try:
             # Call Unison Engine using subprocess
             result = subprocess.run(
@@ -82,6 +101,7 @@ async def create_idea(req: IdeaRequest):
                 new_content = output
         except subprocess.CalledProcessError as e:
             conn.close()
+            logger.error(f"Unison CLI failed: {e.stderr}")
             raise HTTPException(status_code=500, detail=f"Unison CLI failed: {e.stderr}")
     
     c.execute("INSERT INTO ideas (parent_id, content, mutation) VALUES (?, ?, ?)",
@@ -110,9 +130,12 @@ async def get_ideas():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     clients.add(websocket)
+    logger.info("New WebSocket connection")
     try:
         while True:
             await websocket.receive_text()
-    except:
+    except Exception as e:
+        logger.info(f"WebSocket disconnected: {e}")
+    finally:
         if websocket in clients:
             clients.remove(websocket)
