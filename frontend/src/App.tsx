@@ -1,15 +1,17 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import ReactFlow, { 
   MiniMap, 
   Controls, 
   Background, 
   useNodesState, 
   useEdgesState,
-  Panel
+  Panel,
+  Position,
+  type Edge,
+  type Node,
 } from 'reactflow';
 import dagre from 'dagre';
 import 'reactflow/dist/style.css';
-import axios from 'axios';
 
 const API_URL = "/api";
 const WS_URL = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + "/ws";
@@ -20,7 +22,10 @@ dagreGraph.setDefaultEdgeLabel(() => ({}));
 const nodeWidth = 250;
 const nodeHeight = 80;
 
-const getLayoutedElements = (nodes: any[], edges: any[], direction = 'TB') => {
+type IdeaNodeData = { label: ReactNode };
+type IdeaNode = Node<IdeaNodeData>;
+
+const getLayoutedElements = (nodes: IdeaNode[], edges: Edge[], direction: 'TB' | 'LR' = 'TB') => {
   const isHorizontal = direction === 'LR';
   dagreGraph.setGraph({ rankdir: direction });
 
@@ -36,8 +41,8 @@ const getLayoutedElements = (nodes: any[], edges: any[], direction = 'TB') => {
 
   nodes.forEach((node) => {
     const nodeWithPosition = dagreGraph.node(node.id);
-    node.targetPosition = isHorizontal ? 'left' : 'top';
-    node.sourcePosition = isHorizontal ? 'right' : 'bottom';
+    node.targetPosition = isHorizontal ? Position.Left : Position.Top;
+    node.sourcePosition = isHorizontal ? Position.Right : Position.Bottom;
 
     // We are shifting the dagre node position (which is centered) to top left
     node.position = {
@@ -59,17 +64,20 @@ interface Idea {
 }
 
 const App = () => {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<IdeaNodeData>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [input, setInput] = useState('');
   const [selectedParent, setSelectedParent] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchIdeas = useCallback(async () => {
     try {
-      const res = await axios.get<Idea[]>(`${API_URL}/idea`);
-      const rawNodes = res.data.map((idea) => ({
+      const response = await fetch(`${API_URL}/idea`, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(`Idea request failed with ${response.status}`);
+      const ideas = await response.json() as Idea[];
+      const rawNodes: IdeaNode[] = ideas.map((idea) => ({
         id: idea.id.toString(),
+        position: { x: 0, y: 0 },
         data: { 
           label: (
             <div className="node-content">
@@ -87,7 +95,7 @@ const App = () => {
         }
       }));
 
-      const rawEdges = res.data
+      const rawEdges: Edge[] = ideas
         .filter(i => i.parent_id !== null)
         .map(i => ({
           id: `e${i.parent_id}-${i.id}`,
@@ -116,19 +124,16 @@ const App = () => {
     if (!input && mutation === 'base') return;
     setLoading(true);
     try {
-      const parentNode = nodes.find((n: any) => n.id === selectedParent?.toString());
-      
-      if (mutation !== 'base' && parentNode) {
-          // Extract text from the complex label if necessary, but backend knows the parent content from DB if we send parent_id
-          // Actually, let's just send the parent_id and the backend can fetch the content from DB
-          // Wait, my backend currently expects content in the request. Let's fix that.
-      }
-
-      await axios.post(`${API_URL}/idea`, {
-        content: mutation === 'base' ? input : "", // backend will handle content if parent_id is present
-        parent_id: selectedParent,
-        mutation
+      const response = await fetch(`${API_URL}/idea`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          content: mutation === 'base' ? input : '',
+          parent_id: selectedParent,
+          mutation,
+        }),
       });
+      if (!response.ok) throw new Error(`Idea submission failed with ${response.status}`);
       setInput('');
       if (mutation === 'base') setSelectedParent(null);
     } catch (e) {

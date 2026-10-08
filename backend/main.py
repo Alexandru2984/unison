@@ -1,141 +1,236 @@
-import os
-import json
 import asyncio
-import subprocess
+import json
 import logging
-from typing import Optional
-from fastapi import FastAPI, WebSocket, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
+import os
 import sqlite3
+from contextlib import closing
+from enum import StrEnum
+from pathlib import Path
+
 from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, model_validator
 
-load_dotenv(dotenv_path="../.env")
 
-# Setup logging
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(dotenv_path=PROJECT_DIR / ".env", override=False)
+
+
+def bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "evolution.db")).resolve()
+UNISON_BIN = Path(os.getenv("UNISON_BIN", PROJECT_DIR / "ucm-bin" / "ucm-bin")).resolve()
+UNISON_PROGRAM = Path(os.getenv("UNISON_PROGRAM", PROJECT_DIR / "unison" / "evolution.uc")).resolve()
+PUBLIC_ORIGIN = os.getenv("PUBLIC_ORIGIN", "https://unison.micutu.com").rstrip("/")
+MAX_IDEAS = bounded_int("MAX_IDEAS", 10_000, 100, 100_000)
+MAX_RESULTS = bounded_int("MAX_RESULTS", 500, 10, 2_000)
+MUTATION_TIMEOUT_SECONDS = bounded_int("MUTATION_TIMEOUT_SECONDS", 5, 1, 30)
+MAX_RESULT_CHARACTERS = 4_096
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+docs_enabled = os.getenv("ENABLE_API_DOCS", "").lower() == "true"
+app = FastAPI(
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
 )
+
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.error(f"Validation error: {exc.errors()} | Body: {await request.body()}")
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": str(await request.body())},
-    )
+    errors = [
+        {
+            "location": error.get("loc", ()),
+            "message": error.get("msg", "Invalid value"),
+            "type": error.get("type", "value_error"),
+        }
+        for error in exc.errors()
+    ]
+    logger.warning("Request validation failed path=%s errors=%d", request.url.path, len(errors))
+    return JSONResponse(status_code=422, content={"detail": errors})
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "evolution.db")
 
-# Store active websockets
-clients = set()
+def connect_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS ideas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            parent_id INTEGER,
-            content TEXT,
-            mutation TEXT
+
+def init_db() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with closing(connect_db()) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ideas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER,
+                content TEXT NOT NULL,
+                mutation TEXT NOT NULL
+            )
+            """
         )
-    ''')
-    conn.commit()
-    conn.close()
+        conn.commit()
+
 
 init_db()
 
-class IdeaRequest(BaseModel):
-    content: Optional[str] = ""
-    parent_id: Optional[int] = None
-    mutation: str = "base"
 
-async def broadcast_idea(idea):
-    for client in clients:
+class Mutation(StrEnum):
+    BASE = "base"
+    EXPAND = "expand"
+    REPHRASE = "rephrase"
+    MUTATE_KEYWORDS = "mutate_keywords"
+    SYNTHESIZE = "synthesize"
+
+
+class IdeaRequest(BaseModel):
+    content: str = Field(default="", max_length=2_000)
+    parent_id: int | None = Field(default=None, gt=0)
+    mutation: Mutation = Mutation.BASE
+
+    @model_validator(mode="after")
+    def validate_operation(self):
+        self.content = self.content.strip()
+        if self.mutation == Mutation.BASE and not self.content:
+            raise ValueError("Base ideas require content")
+        if self.mutation != Mutation.BASE and self.parent_id is None:
+            raise ValueError("Mutations require a parent idea")
+        return self
+
+
+clients: set[WebSocket] = set()
+idea_lock = asyncio.Lock()
+
+
+async def broadcast_idea(idea: dict) -> None:
+    disconnected = []
+    for client in tuple(clients):
         try:
             await client.send_json(idea)
-        except Exception as e:
-            logger.error(f"Failed to broadcast: {e}")
+        except Exception:
+            disconnected.append(client)
+    for client in disconnected:
+        clients.discard(client)
 
-@app.post("/api/idea")
+
+async def run_mutation(mutation: Mutation, content: str) -> str:
+    if not UNISON_BIN.is_file() or not UNISON_PROGRAM.is_file():
+        logger.error("Unison runtime files are unavailable")
+        raise HTTPException(status_code=503, detail="Mutation engine unavailable")
+
+    process = await asyncio.create_subprocess_exec(
+        str(UNISON_BIN),
+        "run.compiled",
+        str(UNISON_PROGRAM),
+        mutation.value,
+        content,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=MUTATION_TIMEOUT_SECONDS)
+    except TimeoutError:
+        process.kill()
+        await process.communicate()
+        logger.warning("Unison mutation timed out mutation=%s", mutation.value)
+        raise HTTPException(status_code=504, detail="Mutation engine timed out") from None
+
+    if process.returncode != 0:
+        logger.error("Unison mutation failed mutation=%s returncode=%d", mutation.value, process.returncode)
+        raise HTTPException(status_code=502, detail="Mutation engine failed")
+
+    output = stdout.decode("utf-8", errors="replace").strip()
+    try:
+        payload = json.loads(output)
+        result = payload.get("result")
+    except (json.JSONDecodeError, AttributeError):
+        result = output
+
+    if not isinstance(result, str) or not result or len(result) > MAX_RESULT_CHARACTERS:
+        logger.error("Unison mutation returned an invalid result mutation=%s", mutation.value)
+        raise HTTPException(status_code=502, detail="Mutation engine returned an invalid result")
+    return result
+
+
+@app.get("/api/health")
+async def health():
+    with closing(connect_db()) as conn:
+        conn.execute("SELECT 1").fetchone()
+    return {"status": "ok"}
+
+
+@app.post("/api/idea", status_code=201)
 async def create_idea(req: IdeaRequest):
-    new_content = req.content
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    if req.mutation != "base":
-        source_content = req.content
-        if req.parent_id is not None:
-            c.execute("SELECT content FROM ideas WHERE id = ?", (req.parent_id,))
-            row = c.fetchone()
-            if row:
-                source_content = row[0]
-        
-        if not source_content:
-            source_content = ""
+    async with idea_lock:
+        with closing(connect_db()) as conn:
+            if conn.execute("SELECT COUNT(*) FROM ideas").fetchone()[0] >= MAX_IDEAS:
+                raise HTTPException(status_code=507, detail="Idea capacity reached")
 
-        try:
-            # Call Unison Engine using subprocess
-            result = subprocess.run(
-                ["/home/micu/unisonTrying/ucm-bin/ucm-bin", "run.compiled", "/home/micu/unisonTrying/unison/evolution.uc", req.mutation, source_content],
-                capture_output=True, text=True, check=True
+            new_content = req.content
+            if req.mutation != Mutation.BASE:
+                row = conn.execute("SELECT content FROM ideas WHERE id = ?", (req.parent_id,)).fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Parent idea not found")
+                new_content = await run_mutation(req.mutation, row["content"])
+
+            cursor = conn.execute(
+                "INSERT INTO ideas (parent_id, content, mutation) VALUES (?, ?, ?)",
+                (req.parent_id, new_content, req.mutation.value),
             )
-            output = result.stdout.strip()
-            try:
-                unison_json = json.loads(output)
-                new_content = unison_json.get("result", output)
-            except json.JSONDecodeError:
-                new_content = output
-        except subprocess.CalledProcessError as e:
-            conn.close()
-            logger.error(f"Unison CLI failed: {e.stderr}")
-            raise HTTPException(status_code=500, detail=f"Unison CLI failed: {e.stderr}")
-    
-    c.execute("INSERT INTO ideas (parent_id, content, mutation) VALUES (?, ?, ?)",
-              (req.parent_id, new_content, req.mutation))
-    idea_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    
-    idea_obj = {"id": idea_id, "content": new_content, "parent_id": req.parent_id, "mutation": req.mutation}
-    await broadcast_idea(idea_obj)
-    
-    return idea_obj
+            idea_id = cursor.lastrowid
+            conn.commit()
+
+    idea = {
+        "id": idea_id,
+        "content": new_content,
+        "parent_id": req.parent_id,
+        "mutation": req.mutation.value,
+    }
+    await broadcast_idea(idea)
+    return idea
+
 
 @app.get("/api/idea")
 async def get_ideas():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, parent_id, content, mutation FROM ideas")
-    rows = c.fetchall()
-    conn.close()
-    
-    ideas = [{"id": r[0], "parent_id": r[1], "content": r[2], "mutation": r[3]} for r in rows]
-    return ideas
+    with closing(connect_db()) as conn:
+        rows = conn.execute(
+            "SELECT id, parent_id, content, mutation FROM ideas ORDER BY id DESC LIMIT ?",
+            (MAX_RESULTS,),
+        ).fetchall()
+    rows.reverse()
+    return [dict(row) for row in rows]
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    if websocket.headers.get("origin") != PUBLIC_ORIGIN:
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
+
     await websocket.accept()
     clients.add(websocket)
-    logger.info("New WebSocket connection")
     try:
         while True:
-            await websocket.receive_text()
-    except Exception as e:
-        logger.info(f"WebSocket disconnected: {e}")
+            message = await websocket.receive_text()
+            if len(message) > 1_024:
+                await websocket.close(code=1009, reason="Message too large")
+                return
+    except Exception:
+        pass
     finally:
-        if websocket in clients:
-            clients.remove(websocket)
+        clients.discard(websocket)
