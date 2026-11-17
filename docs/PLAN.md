@@ -2,6 +2,8 @@
 
 Audit started: 2026-11-17. Existing application: React 19 + React Flow, FastAPI/SQLite, deterministic Unison CLI. Production: Cloudflare → Nginx → loopback API, isolated systemd account, static releases under `/var/www/unison.micutu.com`.
 
+**Release status:** stages 1–6 completed and published on 2026-11-17. See [verification and remaining limitations](RELEASE.md). The next-iteration list below remains a roadmap, not a claim that accounts, moderation or external monitoring have been implemented.
+
 ## Release order and acceptance criteria
 
 1. **Inventory and audit.** Record reproducible findings, actual production protections, deployment drift, data boundaries and recovery instructions. Keep existing data and the local port choice (8097). Commit the audit and plan.
