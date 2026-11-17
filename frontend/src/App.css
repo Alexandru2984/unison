@@ -2115,3 +2115,18 @@
   outline-offset: 3px;
   border-radius: 3px;
 }
+@media (max-width: 370px) {
+  .brand {
+    font-size: 15px;
+  }
+  .topbar {
+    padding-left: 10px;
+    padding-right: 10px;
+    gap: 6px;
+  }
+  .new-idea-top {
+    font-size: 9px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+}
