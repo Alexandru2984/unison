@@ -65,11 +65,14 @@ Personal data may be submitted voluntarily as public text. Avoid secrets and per
 - [Nginx proxy timeouts and forwarded headers](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)
 - [Nginx response header inheritance](https://nginx.org/en/docs/http/ngx_http_headers_module.html)
 - [Unison executable compilation](https://www.unison-lang.org/docs/usage-topics/running-programs/)
+- [Cloudflare JavaScript Detections and CSP nonce support](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/javascript-detections/)
 
 ## Remediation verification
 
 The release adds strict origin/host/content/body validation, per-client rate limits with bounded limiter memory, a four-socket per-client / 48-socket application cap, two bounded mutation slots, cancellation-safe process-group cleanup, output limits and strict JSON parsing. Parent integrity, depth, capacity and idempotent writes are enforced before persistence. Slow socket sends run concurrently with deadlines. SQLite migrations are additive and indexed; unknown historical timestamps remain unknown.
 
 Deployment now uses a dedicated account, root-owned API releases with matching compiled engines, an online verified backup, a disposable full-stack candidate, atomic release switches and automatic rollback attempts. The effective hardened Nginx/systemd configuration is versioned; only this vhost is changed. Security headers are retained in the 429/asset locations. GitHub Actions has minimal permissions, immutable action pins and no production secrets or deploy job.
+
+Public-browser verification identified Cloudflare Bot Fight Mode's injected inline JavaScript conflicting with the pre-existing CSP. A per-response Nginx request-ID nonce lets Cloudflare authorize its injected scripts, as its official documentation supports, without allowing arbitrary inline application scripts. HTML uses no-store and disables conditional 304 responses so a new nonce cannot be paired with previously cached HTML. Cloudflare remains responsible for its own injected browser code and bot policy; no zone-wide settings are changed.
 
 `pip-audit` and `npm audit` returned no known advisories after updates. A limited full-history scan for AWS access-key prefixes, GitHub tokens and private-key PEM markers found no matches; this is not an exhaustive secret-detector result. The final release report records exact check results and production verification. Remaining requirements before promotion: moderation, explicit retention/ownership decisions, active alerts and scheduled off-host backups.
