@@ -135,6 +135,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/idea/999').status_code, 404)
         self.assertEqual(self.client.get('/api/idea/999/lineage').status_code, 404)
 
+    def test_saved_ids_and_seed_filters_are_bounded(self):
+        seed = self.create('seed')
+        child = self.create('custom branch', parent_id=seed['id'])
+        self.assertEqual(self.client.get('/api/idea?roots_only=true').json(), [seed])
+        self.assertEqual(self.client.get('/api/idea', params={'ids': str(child['id'])}).json(), [child])
+        for ids in ['0', '1,2,not-a-number', ','.join(['1'] * 101), '1) OR 1=1 --']:
+            self.assertEqual(self.client.get('/api/idea', params={'ids': ids}).status_code, 422)
+
+    def test_socket_capacity_is_enforced_before_accepting(self):
+        with patch.object(main, 'MAX_CLIENTS', 0):
+            with self.assertRaises(WebSocketDisconnect):
+                with self.client.websocket_connect('/ws', headers={'Origin': main.PUBLIC_ORIGIN}):
+                    pass
+        self.assertFalse(main.clients)
+
     def test_stats_and_catalogue(self):
         self.create()
         stats = self.client.get('/api/stats').json()

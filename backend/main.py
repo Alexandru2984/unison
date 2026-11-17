@@ -238,7 +238,8 @@ def get_parent(conn, parent_id):
 async def health():
     with closing(connect_db()) as conn:
         conn.execute('SELECT 1').fetchone()
-    return {'status': 'ok', 'engine_available': UNISON_BIN.is_file() and UNISON_PROGRAM.is_file()}
+    return {'status': 'ok', 'engine_available': UNISON_BIN.is_file() and UNISON_PROGRAM.is_file(),
+            'revision': os.getenv('APP_REVISION', 'development')[:12]}
 
 
 @app.post('/api/idea', status_code=201)
