@@ -339,6 +339,7 @@ export default function App() {
           "The response could not be read. Retry to check your submission.",
         );
       pendingRequest.current = null;
+      const duplicate = response.headers.get("X-Idea-Duplicate") === "true";
       if (operation === "base") {
         setDraft("");
         resetFilters();
@@ -346,9 +347,11 @@ export default function App() {
       board.upsert(idea);
       selectIdea(idea);
       setNotice(
-        operation === "base"
-          ? "Your idea is planted. Let it grow."
-          : `${mutationName(operation)} complete. A new branch is ready.`,
+        duplicate
+          ? "This idea already grows here — we opened it for you."
+          : operation === "base"
+            ? "Your idea is planted. Let it grow."
+            : `${mutationName(operation)} complete. A new branch is ready.`,
       );
       setLibraryOpen(false);
     } catch (reason) {

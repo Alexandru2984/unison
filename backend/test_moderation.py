@@ -66,6 +66,22 @@ class ModerationTests(unittest.TestCase):
             self.assertEqual(self.client.post(f"/api/idea/{idea['id']}/report", json={'reason': 'spam'}).status_code, 503)
         self.assertEqual(self.client.post(f"/api/idea/{idea['id']}/report", json={'reason': 'spam'}, headers={'Origin': 'https://evil.example'}).status_code, 403)
 
+    def test_report_quota_counts_only_open_reports(self):
+        idea = self.create()
+        self.assertEqual(self.client.post(f"/api/idea/{idea['id']}/report", json={'reason': 'spam'}).status_code, 202)
+        with patch.object(main, 'MAX_REPORTS', 1):
+            self.assertEqual(self.client.post(f"/api/idea/{idea['id']}/report", json={'reason': 'other'}).status_code, 503)
+            with closing(main.connect_db()) as conn:
+                conn.execute("UPDATE idea_reports SET status='dismissed'")
+                conn.commit()
+            self.assertEqual(self.client.post(f"/api/idea/{idea['id']}/report", json={'reason': 'other'}).status_code, 202)
+
+    def test_reports_use_their_own_rate_bucket(self):
+        idea = self.create()
+        with patch.object(main.limiters['report'], 'capacity', 0):
+            self.assertEqual(self.client.post(f"/api/idea/{idea['id']}/report", json={'reason': 'spam'}).status_code, 429)
+            self.create('Writing still works')
+
     def test_hidden_subtree_is_absent_from_every_public_read(self):
         root = self.create('sensitive ancestor')
         child = self.create('sensitive descendant', parent_id=root['id'])

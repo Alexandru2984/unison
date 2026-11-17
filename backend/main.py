@@ -6,7 +6,6 @@ import os
 import re
 import signal
 import sqlite3
-import unicodedata
 from contextlib import asynccontextmanager, closing, suppress
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -21,8 +20,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketDisconnect
-from security import ApiSecurityMiddleware, RateLimiter
+from security import ApiSecurityMiddleware, RateLimiter, WriteBudget, client_key
 from moderation import ReportReason, board_revision, init_moderation, now
+from text_policy import PolicyError, clean_engine_text, clean_user_text, content_key
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=PROJECT_DIR / '.env', override=False)
@@ -49,8 +49,11 @@ MAX_SQLITE_ID = 2**63 - 1
 IdeaId = Annotated[int, PathParam(gt=0, le=MAX_SQLITE_ID)]
 MAX_RESULT_CHARACTERS = 4096
 MAX_PROCESS_BYTES = 65_536
-MAX_CLIENTS = 48
+MAX_CLIENTS = bounded_int('MAX_SOCKETS', 256, 8, 4096)
+MAX_SOCKETS_PER_CLIENT = 4
 MAX_REPORTS = 10_000
+DAILY_IDEAS_PER_CLIENT = bounded_int('DAILY_IDEAS_PER_CLIENT', 150, 1, 10_000)
+GLOBAL_IDEAS_PER_HOUR = bounded_int('GLOBAL_IDEAS_PER_HOUR', 600, 1, 100_000)
 MODERATION_POLL_SECONDS = 1
 MUTATION_TIMEOUT_SECONDS = bounded_int('MUTATION_TIMEOUT_SECONDS', 5, 1, 30)
 IDEA_FIELDS = 'id, parent_id, content, mutation, created_at, root_id, depth'
@@ -85,16 +88,20 @@ async def lifespan(_app):
 docs_enabled = os.getenv('ENABLE_API_DOCS', '').lower() == 'true'
 app = FastAPI(lifespan=lifespan, title='Idea Evolution API', docs_url='/docs' if docs_enabled else None,
               redoc_url='/redoc' if docs_enabled else None, openapi_url='/openapi.json' if docs_enabled else None)
-write_limiter = RateLimiter()
+# Separate buckets: reporting or reacting never consumes the budget for new ideas.
+limiters = {'idea': RateLimiter(), 'report': RateLimiter(capacity=6, per_minute=6),
+            'water': RateLimiter(capacity=30, per_minute=60), 'preview': RateLimiter(capacity=10, per_minute=20)}
+write_limiter = limiters['idea']
 socket_limiter = RateLimiter(capacity=12, per_minute=12)
-app.add_middleware(ApiSecurityMiddleware, public_origin=PUBLIC_ORIGIN, write_limiter=write_limiter)
+write_budget = WriteBudget(DAILY_IDEAS_PER_CLIENT, GLOBAL_IDEAS_PER_HOUR)
+app.add_middleware(ApiSecurityMiddleware, public_origin=PUBLIC_ORIGIN, limiters=limiters)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=os.getenv(
     'ALLOWED_HOSTS', f'{urlsplit(PUBLIC_ORIGIN).hostname},127.0.0.1,localhost').split(','))
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    errors = [{'location': error.get('loc', ()), 'message': error.get('msg', 'Invalid value'),
+    errors = [{'location': error.get('loc', ()), 'message': str(error.get('msg', 'Invalid value')).removeprefix('Value error, '),
                'type': error.get('type', 'value_error')} for error in exc.errors()]
     logger.warning('Request validation failed path=%s errors=%d', request.url.path, len(errors))
     return JSONResponse(status_code=422, content={'detail': errors})
@@ -123,7 +130,7 @@ def init_db() -> None:
             parent_id INTEGER, content TEXT NOT NULL, mutation TEXT NOT NULL)''')
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(ideas)')}
         additions = {'created_at': 'TEXT', 'root_id': 'INTEGER', 'depth': 'INTEGER NOT NULL DEFAULT 0',
-                     'request_key': 'TEXT', 'request_hash': 'TEXT'}
+                     'request_key': 'TEXT', 'request_hash': 'TEXT', 'content_key': 'TEXT'}
         for name, definition in additions.items():
             if name not in columns:
                 conn.execute(f'ALTER TABLE ideas ADD COLUMN {name} {definition}')
@@ -138,6 +145,10 @@ def init_db() -> None:
         conn.execute('CREATE INDEX IF NOT EXISTS ideas_root ON ideas(root_id, id)')
         conn.execute('CREATE INDEX IF NOT EXISTS ideas_mutation ON ideas(mutation, id)')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS ideas_request_key ON ideas(request_key) WHERE request_key IS NOT NULL')
+        # Duplicate detection identity; legacy rows are keyed in place, text is unchanged.
+        for row in conn.execute('SELECT id, content FROM ideas WHERE content_key IS NULL').fetchall():
+            conn.execute('UPDATE ideas SET content_key = ? WHERE id = ?', (content_key(row['content']), row['id']))
+        conn.execute('CREATE INDEX IF NOT EXISTS ideas_content_key ON ideas(content_key, parent_id)')
         init_moderation(conn)
         conn.commit()
 
@@ -161,15 +172,17 @@ class IdeaRequest(BaseModel):
 
     @model_validator(mode='after')
     def validate_operation(self):
-        self.content = self.content.strip()
-        if any(unicodedata.category(c) in ('Cc', 'Cs') and c not in '\n\r\t' for c in self.content):
-            raise ValueError('Unsupported control character in content')
-        if self.mutation == Mutation.BASE and not self.content:
-            raise ValueError('Base ideas require content')
-        if self.mutation != Mutation.BASE:
+        if self.mutation == Mutation.BASE:
+            if not self.content.strip():
+                raise ValueError('Base ideas require content')
+            try:
+                self.content = clean_user_text(self.content)
+            except PolicyError as exc:
+                raise ValueError(str(exc)) from None
+        else:
             if self.parent_id is None:
                 raise ValueError('Mutations require a parent idea')
-            if self.content:
+            if self.content.strip():
                 raise ValueError('Mutations use the selected parent content')
         return self
 
@@ -234,9 +247,10 @@ async def run_mutation(mutation: Mutation, content: str) -> str:
             result, valid = None, False
         if not valid or not isinstance(result, str) or not result.strip() or len(result) > MAX_RESULT_CHARACTERS:
             raise HTTPException(status_code=502, detail='Mutation returned invalid or oversized text. Try a shorter idea or Synthesize first.')
-        if any(unicodedata.category(c) in ('Cc', 'Cs') and c not in '\n\r\t' for c in result):
-            raise HTTPException(status_code=502, detail='Mutation engine returned unsupported characters')
-        return result
+        try:
+            return clean_engine_text(result)
+        except PolicyError:
+            raise HTTPException(status_code=422, detail='This idea contains characters the transformation cannot publish.') from None
     except OSError:
         logger.error('Mutation engine could not be started')
         raise HTTPException(status_code=503, detail='Mutation engine unavailable') from None
@@ -275,11 +289,32 @@ async def health():
             'revision': os.getenv('APP_REVISION', 'development')[:12]}
 
 
+def public_idea(row):
+    return {key: row[key] for key in IDEA_FIELDS.split(', ')}
+
+
+def existing_duplicate(conn, parent_id, key=None, mutation=None):
+    """A visible equivalent idea, None, or 409 when moderation removed that exact text."""
+    if mutation is not None:
+        row = conn.execute(f'SELECT {IDEA_FIELDS}, hidden FROM ideas WHERE parent_id = ? AND mutation = ? '
+                           'ORDER BY hidden, id LIMIT 1', (parent_id, mutation)).fetchone()
+    else:
+        row = conn.execute(f'SELECT {IDEA_FIELDS}, hidden FROM ideas WHERE content_key = ? AND parent_id IS ? '
+                           'ORDER BY hidden, id LIMIT 1', (key, parent_id)).fetchone()
+    if row is None:
+        return None
+    if row['hidden']:
+        raise HTTPException(status_code=409, detail='This text was removed by moderation and cannot be published again.')
+    return public_idea(row)
+
+
 @app.post('/api/idea', status_code=201)
-async def create_idea(req: IdeaRequest, response: Response, idempotency_key: str | None = Header(default=None)):
+async def create_idea(req: IdeaRequest, request: Request, response: Response,
+                      idempotency_key: str | None = Header(default=None)):
     if idempotency_key is not None and not re.fullmatch(r'[A-Za-z0-9_-]{16,64}', idempotency_key):
         raise HTTPException(status_code=422, detail='Invalid idempotency key')
     request_hash = hashlib.sha256(req.model_dump_json().encode()).hexdigest()
+    client = client_key(request.client.host if request.client else None)
 
     def replay(conn):
         if idempotency_key is None:
@@ -292,34 +327,69 @@ async def create_idea(req: IdeaRequest, response: Response, idempotency_key: str
         if row['request_hash'] != request_hash:
             raise HTTPException(status_code=409, detail='Idempotency key was already used for a different idea')
         response.status_code = 200
-        return {key: row[key] for key in IDEA_FIELDS.split(', ')}
+        return public_idea(row)
+
+    def duplicate(conn, key=None):
+        # Deterministic rules always produce the same branch; reuse it instead of storing a copy.
+        if req.mutation != Mutation.BASE:
+            found = existing_duplicate(conn, req.parent_id, mutation=req.mutation.value)
+        else:
+            found = existing_duplicate(conn, req.parent_id, key or content_key(req.content))
+        if found is not None:
+            response.status_code = 200
+            response.headers['X-Idea-Duplicate'] = 'true'
+        return found
+
+    def ensure_budget():
+        wait, scope = write_budget.check(client)
+        if wait:
+            detail = ('The garden is growing very fast right now. New ideas resume shortly.' if scope == 'global'
+                      else 'Daily limit for new ideas reached on this connection. Explore and branch again tomorrow.')
+            raise HTTPException(status_code=429, detail=detail, headers={'Retry-After': str(wait)})
 
     with closing(connect_db()) as conn:
         existing = replay(conn)
         if existing:
             return existing
+        parent = get_parent(conn, req.parent_id)
+        existing = duplicate(conn)
+        if existing:
+            return existing
         if conn.execute('SELECT COUNT(*) FROM ideas').fetchone()[0] >= MAX_IDEAS:
             raise HTTPException(status_code=507, detail='Public board capacity reached')
-        parent = get_parent(conn, req.parent_id)
+    ensure_budget()
     new_content = req.content if req.mutation == Mutation.BASE else await run_mutation(req.mutation, parent['content'])
+    key = content_key(new_content)
     async with idea_lock:
         with closing(connect_db()) as conn:
             conn.execute('BEGIN IMMEDIATE')
             existing = replay(conn)
             if existing:
                 return existing
+            parent = get_parent(conn, req.parent_id)
+            existing = duplicate(conn, key)
+            if existing:
+                return existing
+            if req.mutation != Mutation.BASE:
+                # A different rule can still reproduce text already stored under this parent.
+                existing = existing_duplicate(conn, req.parent_id, key)
+                if existing:
+                    response.status_code = 200
+                    response.headers['X-Idea-Duplicate'] = 'true'
+                    return existing
             if conn.execute('SELECT COUNT(*) FROM ideas').fetchone()[0] >= MAX_IDEAS:
                 raise HTTPException(status_code=507, detail='Public board capacity reached')
-            parent = get_parent(conn, req.parent_id)
-            cursor = conn.execute('''INSERT INTO ideas (parent_id, content, mutation, created_at, root_id, depth, request_key, request_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (
+            ensure_budget()
+            cursor = conn.execute('''INSERT INTO ideas (parent_id, content, mutation, created_at, root_id, depth, request_key, request_hash, content_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
                 req.parent_id, new_content, req.mutation.value, datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
-                parent['root_id'] if parent else None, parent['depth'] + 1 if parent else 0, idempotency_key, request_hash))
+                parent['root_id'] if parent else None, parent['depth'] + 1 if parent else 0, idempotency_key, request_hash, key))
             idea_id = cursor.lastrowid
             if parent is None:
                 conn.execute('UPDATE ideas SET root_id = ? WHERE id = ?', (idea_id, idea_id))
             idea = dict(conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ?', (idea_id,)).fetchone())
             conn.commit()
+            write_budget.consume(client)
     await broadcast_idea({'event': 'ideas_changed'})
     return idea
 
@@ -416,7 +486,7 @@ async def report_idea(idea_id: IdeaId, req: ReportRequest):
             raise HTTPException(status_code=404, detail='Idea not found')
         existing = conn.execute("SELECT 1 FROM idea_reports WHERE idea_id=? AND reason=? AND status='open'", (idea_id, req.reason.value)).fetchone()
         if existing is None:
-            if conn.execute('SELECT COUNT(*) FROM idea_reports').fetchone()[0] >= MAX_REPORTS:
+            if conn.execute("SELECT COUNT(*) FROM idea_reports WHERE status='open'").fetchone()[0] >= MAX_REPORTS:
                 raise HTTPException(status_code=503, detail='Reporting is temporarily unavailable. Please try again later.')
             conn.execute('INSERT INTO idea_reports(idea_id,reason,created_at) VALUES(?,?,?)', (idea_id, req.reason.value, now()))
             conn.commit()
@@ -440,8 +510,9 @@ async def websocket_endpoint(websocket: WebSocket):
     if websocket.headers.get('origin') != PUBLIC_ORIGIN:
         await websocket.close(code=1008, reason='Origin not allowed')
         return
-    address = websocket.client.host if websocket.client else 'unknown'
-    if len(clients) >= MAX_CLIENTS or sum(value == address for value in clients.values()) >= 4 or not socket_limiter.allow(address):
+    address = client_key(websocket.client.host if websocket.client else None)
+    if (len(clients) >= MAX_CLIENTS or sum(value == address for value in clients.values()) >= MAX_SOCKETS_PER_CLIENT
+            or not socket_limiter.allow(address)):
         await websocket.close(code=1013, reason='Connection limit reached')
         return
     clients[websocket] = address

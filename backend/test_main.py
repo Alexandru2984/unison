@@ -30,8 +30,10 @@ class ApiTests(unittest.TestCase):
         self.database = patch.object(main, 'DB_PATH', Path(self.temp_dir.name) / 'test.db')
         self.database.start()
         main.init_db()
-        main.write_limiter.entries.clear()
-        main.socket_limiter.entries.clear()
+        for limiter in [*main.limiters.values(), main.socket_limiter]:
+            limiter.entries.clear()
+        main.write_budget.clients.clear()
+        main.write_budget.recent.clear()
         main.clients.clear()
         main.idea_lock = asyncio.Lock()
         main.mutation_slots = asyncio.Semaphore(2)
@@ -72,7 +74,7 @@ class ApiTests(unittest.TestCase):
 
     def test_valid_unicode_and_json_characters(self):
         content = 'Grădină 🌱 "quoted" C:\\notes\nnew\tline\rnext'
-        self.assertEqual(self.create(content)['content'], content)
+        self.assertEqual(self.create(content)['content'], content.replace('\r', '\n'))
 
     def test_parent_integrity_for_custom_branches_and_mutations(self):
         for payload in [{'content': 'orphan', 'parent_id': 999}, {'parent_id': 999, 'mutation': 'expand'}]:
@@ -188,6 +190,89 @@ class ApiTests(unittest.TestCase):
             ws.send_text('unsolicited')
             self.assertEqual(ws.receive()['code'], 1008)
         self.assertFalse(main.clients)
+
+    def test_policy_rejections_explain_without_echoing_text(self):
+        for content, message in [('secret https://spam.example', 'Links and web addresses'),
+                                 ('secret ‮gnp', 'Invisible or direction-changing'),
+                                 ('​​', 'Invisible or direction-changing'),
+                                 ('secret' + '́' * 9, 'stacked accent')]:
+            response = self.client.post('/api/idea', json={'content': content})
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertIn(message, response.json()['detail'][0]['message'])
+            self.assertFalse(response.json()['detail'][0]['message'].startswith('Value error'))
+            self.assertNotIn('secret', response.text)
+        self.assertEqual(self.client.get('/api/stats').json()['total'], 0)
+
+    def test_duplicate_seeds_and_branches_reuse_the_existing_idea(self):
+        seed = self.create('A shared  Garden')
+        again = self.client.post('/api/idea', json={'content': 'a shared garden'})
+        self.assertEqual((again.status_code, again.headers.get('x-idea-duplicate')), (200, 'true'))
+        self.assertEqual(again.json(), seed)
+        branch = self.create('Rooftop beds', parent_id=seed['id'])
+        self.assertEqual(self.client.post('/api/idea', json={'content': 'Rooftop  beds', 'parent_id': seed['id']}).json(), branch)
+        # The same text elsewhere is a different idea.
+        self.assertNotEqual(self.create('Rooftop beds')['id'], branch['id'])
+        self.assertEqual(self.client.get('/api/stats').json()['total'], 3)
+
+    def test_repeated_deterministic_mutation_skips_the_engine(self):
+        root = self.create()
+        with patch.object(main, 'run_mutation', new_callable=AsyncMock, return_value='Expanded result') as mutation:
+            first = self.client.post('/api/idea', json={'parent_id': root['id'], 'mutation': 'expand'})
+            second = self.client.post('/api/idea', json={'parent_id': root['id'], 'mutation': 'expand'})
+        self.assertEqual((first.status_code, second.status_code), (201, 200))
+        self.assertEqual(second.headers['x-idea-duplicate'], 'true')
+        self.assertEqual(first.json(), second.json())
+        mutation.assert_awaited_once()
+        # A different rule that reproduces existing sibling text is reused too.
+        with patch.object(main, 'run_mutation', new_callable=AsyncMock, return_value='expanded  RESULT'):
+            third = self.client.post('/api/idea', json={'parent_id': root['id'], 'mutation': 'rephrase'})
+        self.assertEqual((third.status_code, third.json()['id']), (200, first.json()['id']))
+
+    def test_moderated_text_cannot_be_republished(self):
+        from moderation import apply_rule
+        seed = self.create('Moderated words')
+        with patch.object(main, 'run_mutation', new_callable=AsyncMock, return_value='Expanded words'):
+            child = self.client.post('/api/idea', json={'parent_id': seed['id'], 'mutation': 'expand'}).json()
+        with closing(main.connect_db()) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            apply_rule(conn, child['id'], 'hide', 'spam', 'operator')
+            conn.commit()
+        with patch.object(main, 'run_mutation', new_callable=AsyncMock) as mutation:
+            response = self.client.post('/api/idea', json={'parent_id': seed['id'], 'mutation': 'expand'})
+        self.assertEqual(response.status_code, 409)
+        mutation.assert_not_called()
+        with closing(main.connect_db()) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            apply_rule(conn, seed['id'], 'hide', 'spam', 'operator')
+            conn.commit()
+        self.assertEqual(self.client.post('/api/idea', json={'content': 'moderated  WORDS'}).status_code, 409)
+
+    def test_daily_and_global_budgets_bound_new_ideas(self):
+        with patch.object(main.write_budget, 'per_client_day', 2):
+            self.create('one')
+            self.create('two')
+            self.assertEqual(self.client.post('/api/idea', json={'content': 'one'}).status_code, 200)
+            response = self.client.post('/api/idea', json={'content': 'three'})
+        self.assertEqual(response.status_code, 429)
+        self.assertGreater(int(response.headers['retry-after']), 0)
+        self.assertIn('Daily limit', response.json()['detail'])
+        main.write_budget.clients.clear()
+        with patch.object(main.write_budget, 'global_hour', 2):
+            response = self.client.post('/api/idea', json={'content': 'four'})
+        self.assertEqual(response.status_code, 429)
+        self.assertIn('growing very fast', response.json()['detail'])
+        self.assertEqual(self.client.get('/api/stats').json()['total'], 2)
+
+    def test_ipv6_clients_share_a_slash_64_budget(self):
+        from security import client_key
+        self.assertEqual(client_key('2001:db8:1:2:aaaa::1'), client_key('2001:db8:1:2:ffff::9'))
+        self.assertNotEqual(client_key('2001:db8:1:2::1'), client_key('2001:db8:1:3::1'))
+        self.assertEqual(client_key('::ffff:203.0.113.9'), '203.0.113.9')
+        self.assertEqual(client_key('203.0.113.9'), '203.0.113.9')
+        self.assertEqual(client_key(None), 'unknown')
+        limiter = RateLimiter(capacity=2, per_minute=0)
+        allowed = sum(limiter.allow(client_key(f'2001:db8::{i:x}')) for i in range(50))
+        self.assertEqual(allowed, 2)
 
     def test_docs_disabled(self):
         self.assertEqual(self.client.get('/docs').status_code, 404)

@@ -1,8 +1,27 @@
 """Bounded ASGI guards. Submitted text and client addresses are never logged."""
 import asyncio
+import ipaddress
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from datetime import datetime, timedelta, timezone
 from starlette.responses import JSONResponse
+
+
+def client_key(host):
+    """Rate-limit identity. One IPv6 subscriber normally controls a whole /64."""
+    try:
+        address = ipaddress.ip_address(host)
+    except (TypeError, ValueError):
+        return str(host or 'unknown')
+    if address.version == 6:
+        if address.ipv4_mapped:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f'{address}/64', strict=False).network_address) + '/64'
+    return str(address)
+
+
+def scope_client(scope):
+    return client_key((scope.get('client') or ('unknown', 0))[0])
 
 
 class RateLimiter:
@@ -26,11 +45,64 @@ class RateLimiter:
         return allowed
 
 
+class WriteBudget:
+    """Daily per-client and hourly global ceilings on newly stored ideas.
+
+    The token bucket smooths bursts; this budget bounds how quickly anyone can
+    consume the shared board's finite capacity. Memory is bounded.
+    """
+
+    def __init__(self, per_client_day=150, global_hour=600, max_clients=65_536, clock=time.time):
+        self.per_client_day = per_client_day
+        self.global_hour = global_hour
+        self.max_clients = max_clients
+        self.clock = clock
+        self.clients = OrderedDict()
+        self.recent = deque()
+
+    def _day(self, now):
+        return datetime.fromtimestamp(now, timezone.utc).date()
+
+    def check(self, key):
+        """Return (seconds to wait, 'global' | 'client'), or (0, None) when allowed."""
+        now = self.clock()
+        while self.recent and now - self.recent[0] >= 3600:
+            self.recent.popleft()
+        if len(self.recent) >= self.global_hour:
+            return max(1, int(3600 - (now - self.recent[0])) + 1), 'global'
+        day, count = self.clients.get(key, (None, 0))
+        if day == self._day(now) and count >= self.per_client_day:
+            midnight = datetime.combine(self._day(now) + timedelta(days=1), datetime.min.time(), timezone.utc)
+            return max(1, int(midnight.timestamp() - now) + 1), 'client'
+        return 0, None
+
+    def consume(self, key):
+        now = self.clock()
+        today = self._day(now)
+        self.recent.append(now)
+        day, count = self.clients.pop(key, (today, 0))
+        self.clients[key] = (today, count + 1 if day == today else 1)
+        while len(self.clients) > self.max_clients:
+            self.clients.popitem(last=False)
+
+
+def classify_write(path):
+    if path == '/api/idea':
+        return 'idea'
+    if path.endswith('/report'):
+        return 'report'
+    if path.endswith('/water'):
+        return 'water'
+    if path == '/api/preview':
+        return 'preview'
+    return 'idea'
+
+
 class ApiSecurityMiddleware:
-    def __init__(self, app, public_origin, write_limiter, max_body=16_384):
+    def __init__(self, app, public_origin, limiters, max_body=16_384):
         self.app = app
         self.public_origin = public_origin
-        self.write_limiter = write_limiter
+        self.limiters = limiters
         self.max_body = max_body
 
     async def __call__(self, scope, receive, send):
@@ -58,9 +130,8 @@ class ApiSecurityMiddleware:
             if headers.get(b'content-type', b'').split(b';')[0].strip().lower() != b'application/json':
                 await reject(415, 'Use application/json')
                 return
-            client = (scope.get('client') or ('unknown', 0))[0]
-            if not self.write_limiter.allow(client):
-                await reject(429, 'Too many writes. Please try again shortly.', {'Retry-After': '30'})
+            if not self.limiters[classify_write(scope['path'])].allow(scope_client(scope)):
+                await reject(429, 'Too many requests. Please try again shortly.', {'Retry-After': '30'})
                 return
         try:
             declared_size = int(headers.get(b'content-length', b'0'))
