@@ -16,6 +16,7 @@ Production: **https://unison.micutu.com/**
 - Copy text or a direct public idea link; export loaded ideas or a lineage as JSON/Markdown.
 - Use light/dark themes, starter prompts, keyboard shortcuts, graph orientation and zoom controls.
 - See request errors, loading/empty states, offline status and reconnect progress. POST results appear immediately; WebSocket reconnection and polling keep other updates current.
+- Report a public idea privately by choosing a reason. The operator can review, hide and restore branches through the local SSH/sudo interface, with an audit trail. Reports never remove content automatically.
 
 Published text is public. Drafts and bookmarks stay on the device and are lost if browser storage is cleared. Do not submit secrets or personal information. The transformations are deliberately simple text rules; the guide describes what each rule does.
 
@@ -79,11 +80,12 @@ Audit dependencies with `pip-audit -r backend/requirements.txt --no-deps --disab
 | `POST /api/idea` | Create `{content, parent_id, mutation}`; optional `Idempotency-Key` for safe retries |
 | `GET /api/idea/{id}` | A public idea |
 | `GET /api/idea/{id}/lineage` | Bounded ancestry from seed to selected idea |
+| `POST /api/idea/{id}/report` | Private, deduplicated report `{reason}`; no free-text details or public report counts |
 | `GET /api/stats` | Idea/seed totals, depth, per-rule counts and capacity |
 | `GET /api/mutations` | Transformation names and descriptions |
-| `WS /ws` | Same-origin server-to-client idea updates |
+| `WS /ws` | Same-origin change notifications; moderation revision changes invalidate cached public views |
 
-Pagination headers: `X-Has-More`, `X-Next-Cursor`. Use one cursor direction per request. Generated text is capped at 4096 characters, submitted seeds at 2000, branch depth at 32, and the default public board at 10000 records. Existing rows retain unknown timestamps as `null`. There is no arbitrary shared-record editing or deletion API.
+Pagination headers: `X-Has-More`, `X-Next-Cursor`, `X-Board-Revision`. Use one cursor direction per request. Generated text is capped at 4096 characters, submitted seeds at 2000, branch depth at 32, and the default public board at 10000 records. Existing rows retain unknown timestamps as `null`. There is no arbitrary shared-record editing or deletion API. Hidden branches are excluded consistently from public detail, ancestry, pagination, filters, statistics and new mutations. See [moderation and its rollback policy](docs/MODERATION.md).
 
 ## Production and remaining work
 
@@ -91,4 +93,4 @@ Pagination headers: `X-Has-More`, `X-Next-Cursor`. Use one cursor direction per 
 
 The service runs as `unisonapp` with a read-only root-owned API release, a private writable database, loopback-only network access and CPU/memory/process limits. Nginx retains Cloudflare origin protections, TLS, CSP and request/connection limits. Deployment keeps this application's port at 8097 and does not change other vhosts or tunnel routing.
 
-Before broader public promotion, prioritize moderation/reporting, private workspaces with ownership, an explicit retention policy, alert delivery, scheduled off-host backups and restore drills. Individual hash links restore a client view; the sitemap indexes the product landing page, not every public idea. Search Console verification, indexing and external monitoring require actual operator setup and are not implied by repository configuration.
+Before broader public promotion, establish a regular moderation review process, private workspaces with ownership, an explicit retention policy, alert delivery, scheduled off-host backups and restore drills. Individual hash links restore a client view; the sitemap indexes the product landing page, not every public idea. Search Console verification, indexing and external monitoring require actual operator setup and are not implied by repository configuration.

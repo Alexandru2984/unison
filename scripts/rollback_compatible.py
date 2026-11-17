@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Fail closed when an old API release would ignore existing hidden ideas."""
+import os
+import pwd
 import sqlite3
 import sys
 from contextlib import closing
@@ -16,6 +18,11 @@ def compatible(release, database):
 
 if __name__ == '__main__':
     try:
+        if os.geteuid() == 0:
+            service = pwd.getpwnam('unisonapp')
+            os.setgroups([])
+            os.setgid(service.pw_gid)
+            os.setuid(service.pw_uid)
         raise SystemExit(0 if compatible(sys.argv[1], sys.argv[2]) else 1)
-    except (OSError, sqlite3.Error, IndexError):
+    except (OSError, sqlite3.Error, IndexError, KeyError):
         raise SystemExit(1)

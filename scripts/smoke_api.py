@@ -2,6 +2,8 @@
 """Exercise a candidate on loopback, with a disposable database only."""
 import json
 import sys
+import subprocess
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -34,4 +36,32 @@ else:
     raise AssertionError('Orphan parent was accepted')
 assert request('/api/stats')['total'] == 5
 assert len(request('/api/mutations')) == 4
-print('Candidate smoke passed: health, four real mutations, lineage, validation and stats')
+# Operator tests are restricted to this candidate's disposable database.
+database = Path(sys.argv[3]).resolve()
+assert database.parent.name.startswith('unison-deploy-verify.') and database.parent.parent == Path('/tmp')
+assert database.name == 'evolution.db'
+operator = Path(__file__).resolve().with_name('moderate.py')
+
+def moderate(*args):
+    result = subprocess.run([sys.executable, str(operator), '--db', str(database), *args], capture_output=True, text=True, timeout=8, check=True)
+    return json.loads(result.stdout)
+
+for _ in range(2):
+    assert request(f"/api/idea/{seed['id']}/report", {'reason': 'privacy'}) == {'status': 'received'}
+assert len(moderate('queue')) == 1
+assert moderate('hide', str(seed['id']), '--reason', 'privacy')['affected'] == 5
+assert request('/api/idea') == []
+assert request('/api/stats')['total'] == 0
+for path in [f"/api/idea/{seed['id']}", f"/api/idea/{result['id']}/lineage"]:
+    try:
+        request(path)
+    except HTTPError as error:
+        assert error.code == 404
+    else:
+        raise AssertionError('Hidden content was publicly readable')
+assert moderate('restore', str(seed['id']))['affected'] == 5
+assert request('/api/stats')['total'] == 5
+assert request('/api/stats')['board_revision'] == 2
+assert request(f"/api/idea/{seed['id']}")['content'] == seed['content']
+assert moderate('queue') == []
+print('Candidate smoke passed: real mutations, reports, private operator hide/restore, visibility and preservation')

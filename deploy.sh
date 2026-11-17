@@ -140,7 +140,7 @@ for ((attempt=0; attempt<30; attempt++)); do
   sleep 0.2
 done
 kill -0 "$candidate_pid"
-python3 "$project_dir/scripts/smoke_api.py" http://127.0.0.1:18791 "$revision"
+python3 "$project_dir/scripts/smoke_api.py" http://127.0.0.1:18791 "$revision" "$verification_dir/evolution.db"
 kill -TERM -- "-$candidate_pid"
 wait "$candidate_pid" || true
 candidate_pid=''

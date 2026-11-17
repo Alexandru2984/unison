@@ -18,7 +18,7 @@ Audit started: 2026-11-17. Existing application: React 19 + React Flow, FastAPI/
 Prioritize these only after the release works correctly:
 
 - Private workspaces, accounts and explicit ownership, with a reviewed session/CSRF model before editing/deleting shared data.
-- Moderation/reporting, retention rules and an authenticated operator interface before public promotion.
+- Moderation/reporting and the SSH/sudo operator interface are implemented in the follow-up release; [review workflow](MODERATION.md). Retention rules, an owner review schedule and alert delivery still require operational setup before public promotion.
 - Named collections and opt-in collaborative rooms; scoped events and per-room quotas.
 - More useful deterministic transformations in Unison, with versioned engine provenance and golden fixtures.
 - Multi-idea synthesis with two explicit parents and graph invariants.

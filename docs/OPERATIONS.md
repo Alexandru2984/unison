@@ -29,6 +29,12 @@ Use SQLite's online backup API while the service is live; copying just the `.db`
 
 Each private deployment backup records `previous-frontend` and `previous-backend`. To roll back, atomically replace **both** `current` symlinks with these previous release paths, restore the saved application Nginx files, validate Nginx, restart this service and reload Nginx. Keep the versioned hardened service unit: it reads code and the matching engine from the API symlink. Check public health and `release.json` again. Do not reset the developer checkout or automatically restore the database: additive migrations preserve existing and newly submitted ideas. Restore a database only with the service stopped, after backing up the current state, and account for its WAL/SHM files.
 
+Before switching an API release, run `sudo python3 scripts/rollback_compatible.py /absolute/previous/api/release /var/lib/unison-backend/evolution.db` and require exit status 0. Releases predating moderation must not serve a database containing hidden ideas. Automatic deployment rollback enforces this guard; when an old API would reveal hidden content, it stops the API for operator review instead. The guard drops to the database's service account to preserve WAL/SHM ownership.
+
+## Report review
+
+Use `sudo python3 scripts/moderate.py queue` to inspect pending reports and [the moderation guide](MODERATION.md) to inspect, hide, restore and review. Queue access is restricted by SSH/sudo and database filesystem permissions; there is no public admin route. Hiding preserves content, covers the entire descendant branch and publishes a revision change for connected browsers. Restoration respects independent child rules. Existing copies/downloads cannot be recalled. Review remains manual until a notification channel is deliberately configured.
+
 ## Abuse or suspected compromise
 
 1. Record time, health status, service revision and affected endpoint. Preserve journal and this vhost's logs privately.
