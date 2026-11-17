@@ -2,7 +2,9 @@
 
 Audit started: 2026-11-17. Existing application: React 19 + React Flow, FastAPI/SQLite, deterministic Unison CLI. Production: Cloudflare → Nginx → loopback API, isolated systemd account, static releases under `/var/www/unison.micutu.com`.
 
-**Release status:** stages 1–6 completed and published on 2026-11-17. See [verification and remaining limitations](RELEASE.md). The next-iteration list below remains a roadmap, not a claim that accounts, moderation or external monitoring have been implemented.
+**Release status:** stages 1–6 completed and published on 2026-11-17. See [verification and remaining limitations](RELEASE.md). The next-iteration list below remains a roadmap, not a claim that accounts or external monitoring have been implemented.
+
+**Follow-up status:** reporting, reversible subtree moderation, the SSH/sudo operator interface, client cache invalidation and the legacy-rollback guard are implemented and published. All original public ideas remain visible and unchanged. Accounts/private workspaces and external monitoring remain future work.
 
 ## Release order and acceptance criteria
 

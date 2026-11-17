@@ -2,9 +2,22 @@
 
 Date: 2026-11-17. **Published:** https://unison.micutu.com/
 
-Deployed code revision: `622aca9f4f5c8326ad9d66de3de51364b292154c`. A documentation-only verification commit follows deployment; `/api/health` and `/release.json` identify the running code.
+Deployed code revision: `206c6004a210178c23a2008a09a3fa8e4f6b978a`. A documentation-only verification commit follows deployment; `/api/health` and `/release.json` identify the running code.
 
-## Local checks
+## Moderation follow-up release
+
+- Private visitor reports, deduplication, bounded report storage, reversible subtree hiding/restoration and an OS-authorized operator CLI are published. There is no public administrator API. See [moderation instructions](MODERATION.md).
+- All public reads and mutations respect visibility. Independent child rules survive parent restoration. Live change notifications and HTTP revision checks purge new clients' loaded text, seed/graph/list data, comparisons, bookmarks' loaded content and export selections; delayed responses cannot reinsert stale records. Existing downloads/offline copies and old browser versions require separate consideration.
+- **56 tests pass:** 35 backend tests including the real engine and 9 moderation/boundary cases, 3 operational checks, 5 utility checks and 13 Chromium cases. Build/strict TypeScript, zero-warning ESLint, ShellCheck and dependency audits pass. No known dependency advisories were reported.
+- The deployment candidate exercised two deduplicated reports, private queue inspection, hiding all five synthetic records, public 404/exclusion checks, restoring them and checking preservation. These actions used a disposable database only.
+- Public Chromium checks opened and cancelled the report dialog on desktop and a 390px phone view, verified live sync and recorded zero API writes and zero browser exceptions/console errors. Mobile dialog accessibility is also checked in the isolated browser suite.
+- Public health/release revisions agree. All 14 original ideas retain their original IDs, parents, text and mutations; moderation revision is 0 and the real report queue/operator audit are empty. No production idea was hidden, restored or reported for testing.
+- Oversized SQLite identifiers return 422 rather than server errors, including the new reporting route and existing parent/cursor/detail/lineage parameters.
+- Pre-release backup: `/var/backups/unison-backend/20261117T044933Z/evolution.db`, verified with 14 records, integrity ok and mode 0600. Latest rollout backup: `/var/backups/unison-backend/20261117T045244Z/evolution.db`.
+- Deployment rollback refuses a pre-moderation API when hidden records exist, failing closed instead of republishing them. The guard and overlapping-rule restoration are tested.
+- Commits retain the repository owner's existing author/committer identity, without coauthor trailers. No push or GitHub-hosted workflow run was performed.
+
+## Initial release local checks
 
 - 26 backend tests pass with `RUN_ENGINE_TESTS=1`: HTTP/security/persistence boundaries plus the real compiled Unison engine. Golden outputs and repeated Unicode/JSON cases verify the executable.
 - 2 operational tests pass: consistent backup of a live WAL database and rejection of overwriting an existing backup.
@@ -36,4 +49,4 @@ Completed:
 
 GitHub workflows are prepared and locally exercised; they have not run on GitHub until these commits are pushed. CI browser tests use isolated fixtures, while the real engine is exercised locally and by the VPS candidate. No remote push, account creation, external message, paid integration or new analytics service is part of this release.
 
-The public board still needs moderation and reporting before promotion. Private workspaces, accounts/ownership, retention rules, alert delivery and scheduled off-host backups remain the next priorities. Only the landing page is submitted in the sitemap; hash-based public idea links are client navigation, not individually indexed documents.
+The public board now has reporting and operator moderation; the owner must actually review the queue. Private workspaces, accounts/ownership, retention rules, alert delivery and scheduled off-host backups remain the next priorities. Only the landing page is submitted in the sitemap; hash-based public idea links are client navigation, not individually indexed documents.
