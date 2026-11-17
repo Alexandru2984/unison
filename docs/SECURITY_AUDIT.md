@@ -84,3 +84,27 @@ Anonymous reports are private, enumerated, rate limited, deduplicated and storag
 Subtree visibility is enforced in all read variants, statistics, new mutations and idempotent replays. A second parent check closes the engine/CLI race. WebSockets publish notifications rather than idea text; monotonic moderation revisions invalidate loaded browser content and stale responses. Tests cover hidden-data reads, overlapping hide/restore rules, real CLI use, a live WebSocket notification, fallback refresh, comparisons/exports and a delayed write response. Existing offline/downloaded copies and legacy browser code cannot be retroactively recalled.
 
 Legacy API rollback is blocked after content has been hidden, preventing a pre-moderation query implementation from republishing it. SQLite identifier bounds now reject oversized values as 422. See [threat model and operator procedure](MODERATION.md) and [release evidence](RELEASE.md). The queue is still manually reviewed; no external alerts, automatic classifier, account ownership system or retention purge has been introduced.
+
+## Audit 2026-11-18 (v2 iteration)
+
+Scope: the deployed revision `206c600`, its live Nginx/systemd configuration (identical to the repository) and reproducible engine build (byte-identical to production). Every finding below was reproduced against a temporary database or by reading the effective configuration; no production writes were made.
+
+| ID | Severity | Evidence and impact | Stage |
+| --- | --- | --- | --- |
+| V-01 | High | The application rate limiter and WebSocket per-address cap key on the full client address. Rotating 50 addresses inside one IPv6 /64 passed 50/50 requests through a bucket of capacity 2. Nginx keys on `$binary_remote_addr` too, so neither layer bounds an IPv6 client. | E1 |
+| V-02 | High | Capacity exhaustion: 10 writes/min/address against a 10000-idea board lets one actor fill the board in about 17 hours, after which every visitor receives 507 until an operator intervenes. No daily or global write budget exists. | E1 |
+| V-03 | Medium | Only `Cc`/`Cs` characters are rejected. Bidi overrides (U+202E, "Trojan Source" spoofing), zero-width-only text (an invisible idea) and Unicode tag characters (invisible ASCII smuggling) are accepted and published. | E1 |
+| V-04 | Medium | Unlimited combining marks ("zalgo", 500 marks on one letter) are accepted and overflow cards and the graph. | E1 |
+| V-05 | Medium | Links and web addresses are accepted in anonymous public text, the dominant form of board spam. | E1 |
+| V-06 | Medium | Identical seeds and repeated deterministic mutations of one parent create duplicate records that consume capacity. Text hidden by moderation can be republished verbatim. | E1 |
+| V-07 | Low | The report quota counts resolved and dismissed reports, so reporting stops permanently after 10000 lifetime reports. | E1 |
+| V-08 | Low | 48 WebSockets per process; every later visitor silently falls back to 25-second polling. | E1 |
+| OPS-01 | Medium | The service executes the virtual environment and UCM runtime from the developer checkout (`BindReadOnlyPaths=/home/micu/unisonTrying`). `deploy.sh` upgrades that live environment before candidate verification; rollback cannot restore dependencies. | E6 |
+| OPS-02 | Medium | Backups exist only at deployment time; no scheduled backup, and releases/backups are never pruned. | E6 |
+| OPS-03 | Low | HTML responses carry two `Cache-Control` headers (`expires -1` and `no-store`); `/index.html` lacks a method restriction. | E6 |
+| DEV-01 | Low | The production virtual environment lacks test dependencies, and Starlette 1.7 deprecates `httpx` in favor of `httpx2` for its test client. | E6 |
+| FE-01 | Low | The browser rejects a whole page of results containing an unknown transformation, so adding engine rules would break already-open tabs and frontend rollbacks. | E2 |
+
+Confirmed absent in this pass: SQL injection (parameterized queries throughout), shell injection (argument vectors), stored XSS (React text nodes, escaped Markdown export), CSRF on writes (origin + JSON content-type checks), clickjacking (frame-ancestors/X-Frame-Options), open CORS. Real-IP handling is correct: Nginx trusts `CF-Connecting-IP` only from Cloudflare ranges and the local tunnel, and Uvicorn trusts `X-Forwarded-For` only from loopback.
+
+Remediation and new product scope are tracked in [the v2 plan](PLAN.md#v2-iteration-2026-11-18).

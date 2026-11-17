@@ -30,3 +30,21 @@ Prioritize these only after the release works correctly:
 - Localization (Romanian/English), guided first session and share cards for individual public trees.
 
 The public board is shared. Text submitted there is public; local drafts and bookmarks should stay on the device. No accounts, paid services, emails, third-party analytics or AI vendors are introduced in this release.
+
+## v2 iteration (2026-11-18)
+
+Decisions by the owner: one production deployment after all stages; Romanian and English interface with browser detection; links rejected in human-written text; public idea pages become indexable only 48 hours after publication and only while no report is open.
+
+| Stage | Scope | Acceptance |
+| --- | --- | --- |
+| E0 | Audit and plan | Findings V-01…FE-01 recorded with reproduction notes |
+| E1 | Content integrity and abuse limits | Unicode/link policy, duplicate reuse, IPv6 /64 keys, daily and global write budgets, open-report quota, configurable socket cap; tests for each |
+| E2 | Unison engine v2 | Existing four rules byte-identical; `question`, `twist`, `headline`, `flip`; one-process `all` mode; idea and draft previews; release capability guard for rollback |
+| E3 | Social and discovery API | Anonymous "water" reactions without stored addresses, child/water counts, discover sections, random idea, unexplored filter, 30-day activity |
+| E4 | Frontend v2 | Component split, RO/EN, Discover view, previews, reactions, share/card download, graph replay, keyboard navigation, mobile bottom navigation and sheet, onboarding, PWA |
+| E5 | Share pages and feeds | Server-rendered `/i/{id}` with social metadata, delayed-indexing rule, dynamic sitemap and Atom feed |
+| E6 | Operations | Root-owned per-release virtual environment from a hash-locked file, content-addressed UCM runtime outside the developer home, scheduled backups, safe pruning, Nginx cleanup |
+| E7 | SEO and CI | Metadata, structured data, crawl files, workflows covering every new suite |
+| E8 | Deployment | Candidate verification, backup, public browser checks, existing ideas preserved |
+
+Not in scope: accounts, third-party bot challenges or analytics, Cloudflare/tunnel changes, changing the four original rules (existing branches stay reproducible).
