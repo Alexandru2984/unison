@@ -59,6 +59,37 @@ class RollbackPolicyTests(unittest.TestCase):
                 (release / 'moderation.py').touch()
                 self.assertTrue(compatible(release, database))
 
+    def test_old_release_cannot_serve_unknown_transformations(self):
+        from rollback_compatible import compatible
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy, current = root / 'legacy', root / 'current'
+            legacy.mkdir()
+            current.mkdir()
+            for release in (legacy, current):
+                (release / 'moderation.py').touch()
+            (current / 'capabilities.json').write_text('{"mutations": ["base", "expand", "twist"]}')
+            database = root / 'state.db'
+            with closing(sqlite3.connect(database)) as conn:
+                conn.execute('CREATE TABLE ideas(id INTEGER PRIMARY KEY, mutation TEXT, hidden INTEGER DEFAULT 0)')
+                conn.execute("INSERT INTO ideas(mutation) VALUES('expand')")
+                conn.commit()
+                self.assertTrue(compatible(legacy, database))
+                conn.execute("INSERT INTO ideas(mutation) VALUES('twist')")
+                conn.commit()
+                self.assertFalse(compatible(legacy, database))
+                self.assertTrue(compatible(current, database))
+            (current / 'capabilities.json').write_text('{"mutations": "twist"}')
+            with self.assertRaises(ValueError):
+                compatible(current, database)
+
+    def test_repository_capabilities_match_the_api(self):
+        import json
+        capabilities = json.loads((SCRIPT.parent.parent / 'backend/capabilities.json').read_text())
+        source = (SCRIPT.parent.parent / 'backend/main.py').read_text()
+        for mutation in capabilities['mutations']:
+            self.assertIn(f"= '{mutation}'", source)
+
 
 if __name__ == '__main__':
     unittest.main()

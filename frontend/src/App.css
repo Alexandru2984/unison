@@ -624,6 +624,22 @@
   background: #e7f1ef;
   color: #3d6b5e;
 }
+.tag.question {
+  background: #e6effa;
+  color: #345f8c;
+}
+.tag.twist {
+  background: #fde9e3;
+  color: #8f4630;
+}
+.tag.headline {
+  background: #ebecf6;
+  color: #474f86;
+}
+.tag.flip {
+  background: #f4f2dc;
+  color: #6b6424;
+}
 :root[data-theme="dark"] .tag {
   background: #30452e;
   color: #b6d396;
@@ -643,6 +659,22 @@
 :root[data-theme="dark"] .tag.synthesize {
   background: #2c443d;
   color: #a4d3c1;
+}
+:root[data-theme="dark"] .tag.question {
+  background: #2a3a4d;
+  color: #a9c8ec;
+}
+:root[data-theme="dark"] .tag.twist {
+  background: #4a3029;
+  color: #f0b59f;
+}
+:root[data-theme="dark"] .tag.headline {
+  background: #34364d;
+  color: #bfc4f0;
+}
+:root[data-theme="dark"] .tag.flip {
+  background: #43412a;
+  color: #ddd59a;
 }
 .node-text {
   font-size: 12px;
@@ -1094,6 +1126,22 @@
 .synthesize .transform-symbol {
   background: #e7f1ef;
   color: #3d6b5e;
+}
+.question .transform-symbol {
+  background: #e6effa;
+  color: #345f8c;
+}
+.twist .transform-symbol {
+  background: #fde9e3;
+  color: #8f4630;
+}
+.headline .transform-symbol {
+  background: #ebecf6;
+  color: #474f86;
+}
+.flip .transform-symbol {
+  background: #f4f2dc;
+  color: #6b6424;
 }
 .transform-button > span:nth-child(2) {
   flex: 1;

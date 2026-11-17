@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import sqlite3
+from collections import OrderedDict
 from contextlib import asynccontextmanager, closing, suppress
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -89,7 +90,7 @@ docs_enabled = os.getenv('ENABLE_API_DOCS', '').lower() == 'true'
 app = FastAPI(lifespan=lifespan, title='Idea Evolution API', docs_url='/docs' if docs_enabled else None,
               redoc_url='/redoc' if docs_enabled else None, openapi_url='/openapi.json' if docs_enabled else None)
 # Separate buckets: reporting or reacting never consumes the budget for new ideas.
-limiters = {'idea': RateLimiter(), 'report': RateLimiter(capacity=6, per_minute=6),
+limiters = {'idea': RateLimiter(capacity=16, per_minute=12), 'report': RateLimiter(capacity=6, per_minute=6),
             'water': RateLimiter(capacity=30, per_minute=60), 'preview': RateLimiter(capacity=10, per_minute=20)}
 write_limiter = limiters['idea']
 socket_limiter = RateLimiter(capacity=12, per_minute=12)
@@ -162,6 +163,24 @@ class Mutation(StrEnum):
     REPHRASE = 'rephrase'
     MUTATE_KEYWORDS = 'mutate_keywords'
     SYNTHESIZE = 'synthesize'
+    QUESTION = 'question'
+    TWIST = 'twist'
+    HEADLINE = 'headline'
+    FLIP = 'flip'
+
+
+TRANSFORMATIONS = [mutation for mutation in Mutation if mutation != Mutation.BASE]
+CATALOGUE = [
+    {'id': 'expand', 'name': 'Expand', 'description': 'Elaborate on longer words and extend the premise.'},
+    {'id': 'rephrase', 'name': 'Rephrase', 'description': 'Reverse word order for a retrospective perspective.'},
+    {'id': 'mutate_keywords', 'name': 'Amplify', 'description': 'Emphasize longer keywords with uppercase and punctuation.'},
+    {'id': 'synthesize', 'name': 'Synthesize', 'description': 'Keep alternating words to condense the idea.'},
+    {'id': 'question', 'name': 'Question', 'description': 'Turn the idea into a what-if question; repeat it for new framings.'},
+    {'id': 'twist', 'name': 'Twist', 'description': 'Add a surprising constraint chosen from the text itself.'},
+    {'id': 'headline', 'name': 'Headline', 'description': 'Condense the idea into a title-case headline.'},
+    {'id': 'flip', 'name': 'Flip', 'description': 'Swap words for their opposites to explore the reverse premise.'},
+]
+PREVIEW_CACHE_SIZE = 512
 
 
 class IdeaRequest(BaseModel):
@@ -205,7 +224,8 @@ async def broadcast_idea(idea: dict) -> None:
     await asyncio.gather(*(deliver(client) for client in tuple(clients)))
 
 
-async def run_mutation(mutation: Mutation, content: str) -> str:
+async def run_engine(mode: str, content: str) -> dict:
+    """Run one bounded engine process and return its strict JSON object."""
     if not UNISON_BIN.is_file() or not UNISON_PROGRAM.is_file():
         raise HTTPException(status_code=503, detail='Mutation engine unavailable')
     try:
@@ -216,7 +236,7 @@ async def run_mutation(mutation: Mutation, content: str) -> str:
     collection_tasks = []
     try:
         process = await asyncio.create_subprocess_exec(
-            str(UNISON_BIN), 'run.compiled', str(UNISON_PROGRAM), mutation.value, content,
+            str(UNISON_BIN), 'run.compiled', str(UNISON_PROGRAM), mode, content,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
 
         async def read_bounded(stream):
@@ -234,23 +254,18 @@ async def run_mutation(mutation: Mutation, content: str) -> str:
         try:
             stdout, _stderr, _ = await asyncio.wait_for(asyncio.gather(*collection_tasks), timeout=MUTATION_TIMEOUT_SECONDS)
         except TimeoutError:
-            logger.warning('Mutation timed out mutation=%s', mutation.value)
+            logger.warning('Mutation timed out mutation=%s', mode)
             raise HTTPException(status_code=504, detail='Mutation engine timed out') from None
         if process.returncode != 0:
-            logger.error('Mutation failed mutation=%s code=%d', mutation.value, process.returncode)
+            logger.error('Mutation failed mutation=%s code=%d', mode, process.returncode)
             raise HTTPException(status_code=502, detail='Mutation engine failed')
         try:
             payload = json.loads(stdout.decode('utf-8', errors='strict'))
-            result = payload['result']
-            valid = payload.get('mutation') == mutation.value
-        except (ValueError, KeyError, TypeError, AttributeError):
-            result, valid = None, False
-        if not valid or not isinstance(result, str) or not result.strip() or len(result) > MAX_RESULT_CHARACTERS:
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict) or payload.get('mutation') != mode:
             raise HTTPException(status_code=502, detail='Mutation returned invalid or oversized text. Try a shorter idea or Synthesize first.')
-        try:
-            return clean_engine_text(result)
-        except PolicyError:
-            raise HTTPException(status_code=422, detail='This idea contains characters the transformation cannot publish.') from None
+        return payload
     except OSError:
         logger.error('Mutation engine could not be started')
         raise HTTPException(status_code=503, detail='Mutation engine unavailable') from None
@@ -268,6 +283,34 @@ async def run_mutation(mutation: Mutation, content: str) -> str:
             # alone can hang when an oversized output has paused its read transport.
             await process.communicate()
         mutation_slots.release()
+
+
+def valid_result(value) -> str | None:
+    if not isinstance(value, str) or not value.strip() or len(value) > MAX_RESULT_CHARACTERS:
+        return None
+    try:
+        return clean_engine_text(value)
+    except PolicyError:
+        return None
+
+
+async def run_mutation(mutation: Mutation, content: str) -> str:
+    payload = await run_engine(mutation.value, content)
+    result = payload.get('result')
+    if not isinstance(result, str) or not result.strip() or len(result) > MAX_RESULT_CHARACTERS:
+        raise HTTPException(status_code=502, detail='Mutation returned invalid or oversized text. Try a shorter idea or Synthesize first.')
+    try:
+        return clean_engine_text(result)
+    except PolicyError:
+        raise HTTPException(status_code=422, detail='This idea contains characters the transformation cannot publish.') from None
+
+
+async def run_all(content: str) -> dict[str, str | None]:
+    """Every transformation from one process; an unusable result becomes None."""
+    results = (await run_engine('all', content)).get('results')
+    if not isinstance(results, dict):
+        raise HTTPException(status_code=502, detail='Mutation engine failed')
+    return {mutation.value: valid_result(results.get(mutation.value)) for mutation in TRANSFORMATIONS}
 
 
 def get_parent(conn, parent_id):
@@ -360,6 +403,8 @@ async def create_idea(req: IdeaRequest, request: Request, response: Response,
     ensure_budget()
     new_content = req.content if req.mutation == Mutation.BASE else await run_mutation(req.mutation, parent['content'])
     key = content_key(new_content)
+    if parent is not None and new_content.strip() == parent['content'].strip():
+        raise HTTPException(status_code=422, detail='This would repeat the parent idea unchanged. Try another direction.')
     async with idea_lock:
         with closing(connect_db()) as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -497,12 +542,64 @@ async def report_idea(idea_id: IdeaId, req: ReportRequest):
 
 @app.get('/api/mutations')
 async def get_mutations():
-    return [
-        {'id': 'expand', 'name': 'Expand', 'description': 'Elaborate on longer words and extend the premise.'},
-        {'id': 'rephrase', 'name': 'Rephrase', 'description': 'Reverse word order for a retrospective perspective.'},
-        {'id': 'mutate_keywords', 'name': 'Amplify', 'description': 'Emphasize longer keywords with uppercase and punctuation.'},
-        {'id': 'synthesize', 'name': 'Synthesize', 'description': 'Keep alternating words to condense the idea.'},
-    ]
+    return CATALOGUE
+
+
+preview_cache: OrderedDict[int, dict[str, str | None]] = OrderedDict()
+
+
+def preview_rows(results, parent_content, existing=None):
+    existing = existing or {}
+    return [{'mutation': name, 'content': text, 'unchanged': text is not None and text.strip() == parent_content.strip(),
+             'existing_id': existing.get(name)} for name, text in results.items()]
+
+
+def check_preview_rate(request: Request):
+    if not limiters['preview'].allow(client_key(request.client.host if request.client else None)):
+        raise HTTPException(status_code=429, detail='Too many previews. Please try again shortly.', headers={'Retry-After': '30'})
+
+
+@app.get('/api/idea/{idea_id}/preview')
+async def preview_idea(idea_id: IdeaId, request: Request):
+    """What every rule would produce from this idea; nothing is stored."""
+    with closing(connect_db()) as conn:
+        row = conn.execute('SELECT content FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Idea not found')
+        existing = {}
+        for child in conn.execute('SELECT mutation, MIN(id) AS id FROM ideas WHERE parent_id = ? AND hidden=0 '
+                                  "AND mutation != 'base' GROUP BY mutation", (idea_id,)):
+            existing[child['mutation']] = child['id']
+    results = preview_cache.get(idea_id)
+    if results is None:
+        check_preview_rate(request)
+        results = await run_all(row['content'])
+        # Stored ideas are immutable, so a computed preview stays valid.
+        preview_cache[idea_id] = results
+        while len(preview_cache) > PREVIEW_CACHE_SIZE:
+            preview_cache.popitem(last=False)
+    else:
+        preview_cache.move_to_end(idea_id)
+    return {'idea_id': idea_id, 'results': preview_rows(results, row['content'], existing)}
+
+
+class PreviewRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    content: str = Field(min_length=1, max_length=2000, strict=True)
+
+    @model_validator(mode='after')
+    def validate_text(self):
+        try:
+            self.content = clean_user_text(self.content)
+        except PolicyError as exc:
+            raise ValueError(str(exc)) from None
+        return self
+
+
+@app.post('/api/preview')
+async def preview_draft(req: PreviewRequest):
+    """Try every rule on a draft before publishing it; nothing is stored."""
+    return {'results': preview_rows(await run_all(req.content), req.content)}
 
 
 @app.websocket('/ws')

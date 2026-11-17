@@ -90,6 +90,197 @@ synthesize text =
   "Synthesis: " ++ joinWords keep
 
 -- =======================================================
+-- V2 RULES (added 2026-11-18). The four rules above stay
+-- unchanged so every existing branch remains reproducible.
+-- =======================================================
+isClosingPunctuation : Char -> Boolean
+isClosingPunctuation c =
+  (c == ?.) || (c == ?!) || (c == ??) || (c == ?,) || (c == ?;) || (c == ?:) || (c == ?\s) || (c == ?\n) || (c == ?\t)
+
+trimEnding : Text -> Text
+trimEnding t = Text.dropEndWhile isClosingPunctuation t
+
+flatten : Text -> Text
+flatten t = trimEnding (Text.replaceAll "\t" " " (Text.replaceAll "\n" " " t))
+
+upperFirst : Text -> Text
+upperFirst t = Text.toUppercase (Text.take 1 t) ++ Text.drop 1 t
+
+isUppercaseLetter : Text -> Boolean
+isUppercaseLetter c = (Text.toUppercase c == c) && Boolean.not (Text.toLowercase c == c)
+
+-- Lowercase a sentence start, but keep acronyms ("AI") and the pronoun "I".
+lowerFirst : Text -> Text
+lowerFirst t =
+  first = Text.take 1 t
+  second = Text.take 1 (Text.drop 1 t)
+  if isUppercaseLetter second then t
+  else if (first == "I") && ((second == " ") || (second == "'") || (second == "")) then t
+  else Text.toLowercase first ++ Text.drop 1 t
+
+memberText : Text -> [Text] -> Boolean
+memberText x xs = match xs with
+  [] -> false
+  h +: rest -> if h == x then true else memberText x rest
+
+dropPrefix : Text -> Text -> Text
+dropPrefix prefix t =
+  if Text.startsWith prefix t then Text.drop (Text.size prefix) t else t
+
+-- QUESTION: turn the idea into a question; repeating it cycles
+-- through four different framings.
+questionFrames : [Text]
+questionFrames =
+  ["What if ", "What would happen next if ", "Who would benefit if ", "What could stand in the way if "]
+
+findFrame : Nat -> Text -> Optional (Nat, Nat)
+findFrame i lowered =
+  match List.at i questionFrames with
+    None -> None
+    Some frame ->
+      if Text.startsWith (Text.toLowercase frame) lowered then Some (i, Text.size frame)
+      else findFrame (i + 1) lowered
+
+imperativeVerbs : [Text]
+imperativeVerbs =
+  [ "turn", "make", "build", "create", "give", "let", "start", "use", "help", "bring", "design", "open"
+  , "put", "try", "invent", "imagine", "add", "replace", "teach", "connect", "share", "plant", "grow"
+  , "find", "write", "offer", "transform", "combine", "reuse", "rethink", "organize", "host", "invite"
+  , "map", "collect", "launch", "run", "swap", "fix", "repair", "keep", "change", "mix", "rebuild"
+  ]
+
+-- "Turn X" becomes "we turn X"; "A library ..." becomes "there were a library ...".
+questionBody : Text -> Text
+questionBody core =
+  lowered = lowerFirst core
+  firstWord = Text.toLowercase (Text.takeWhile (c -> Boolean.not (c == ?\s)) core)
+  if memberText firstWord imperativeVerbs then "we " ++ lowered
+  else if (firstWord == "a") || (firstWord == "an") then "there were " ++ lowered
+  else lowered
+
+question : Text -> Text
+question text =
+  core = flatten text
+  match findFrame 0 (Text.toLowercase core) with
+    Some (i, size) ->
+      next = Nat.mod (i + 1) (List.size questionFrames)
+      match List.at next questionFrames with
+        Some frame -> frame ++ Text.drop size core ++ "?"
+        None -> core ++ "?"
+    None -> "What if " ++ questionBody core ++ "?"
+
+-- TWIST: add a perspective chosen deterministically from the
+-- text itself, so the same idea always receives the same twist.
+twistLenses : [Text]
+twistLenses =
+  [ "designed for children"
+  , "a hundred years from now"
+  , "with no budget at all"
+  , "for a whole city at once"
+  , "as a game anyone can play"
+  , "without any technology"
+  , "on a tiny island"
+  , "in a single afternoon"
+  , "run entirely by volunteers"
+  , "for people who have never met"
+  , "where the audience becomes the creator"
+  , "as a ritual that returns every year"
+  ]
+
+charSum : Text -> Nat
+charSum t = List.foldLeft (acc c -> acc + Char.toNat c) 0 (Text.toCharList t)
+
+twist : Text -> Text
+twist text =
+  core = dropPrefix "Twist: " (flatten text)
+  lens = match List.at (Nat.mod (charSum core) (List.size twistLenses)) twistLenses with
+    Some chosen -> chosen
+    None -> "seen from the other side"
+  "Twist: " ++ core ++ ", but " ++ lens ++ "."
+
+-- HEADLINE: a title-cased headline of at most twelve words.
+smallWords : [Text]
+smallWords = ["a", "an", "the", "of", "and", "or", "to", "in", "on", "for", "with", "by", "at", "from", "into", "as", "but"]
+
+titleWord : (Text, Nat) -> Text
+titleWord p = match p with
+  (w, i) ->
+    if (i > 0) && memberText (Text.toLowercase (trimPunctuation w)) smallWords then Text.toLowercase w
+    else upperFirst w
+
+headline : Text -> Text
+headline text =
+  words = List.filter (w -> Text.size w > 0) (splitWords (flatten text))
+  kept = List.take 12 words
+  body = trimEnding (joinWords (List.map titleWord (List.indexed kept)))
+  if Text.size body == 0 then text
+  else if List.size words > 12 then body ++ "…"
+  else body
+
+-- FLIP: swap words for their opposites to explore the reverse premise.
+antonyms : [(Text, Text)]
+antonyms =
+  [ ("more", "less"), ("big", "small"), ("easy", "hard"), ("fast", "slow"), ("always", "never")
+  , ("everyone", "nobody"), ("everything", "nothing"), ("open", "closed"), ("start", "finish")
+  , ("begin", "end"), ("new", "old"), ("high", "low"), ("rich", "poor"), ("public", "private")
+  , ("empty", "full"), ("together", "alone"), ("increase", "decrease"), ("add", "remove")
+  , ("simple", "complex"), ("cheap", "expensive"), ("quiet", "loud"), ("light", "dark")
+  , ("early", "late"), ("first", "last"), ("local", "global"), ("online", "offline")
+  , ("inside", "outside"), ("up", "down"), ("win", "lose"), ("give", "take"), ("buy", "sell")
+  , ("day", "night"), ("short", "long"), ("better", "worse"), ("best", "worst"), ("many", "few")
+  , ("can", "cannot"), ("with", "without"), ("make", "break"), ("remember", "forget")
+  , ("true", "false"), ("yes", "no"), ("city", "village"), ("future", "past"), ("hot", "cold")
+  , ("strong", "weak"), ("safe", "risky"), ("happy", "sad"), ("accept", "reject"), ("allow", "forbid")
+  , ("visible", "hidden"), ("near", "far"), ("push", "pull"), ("teach", "learn"), ("lead", "follow")
+  , ("save", "spend"), ("real", "imaginary"), ("digital", "analog"), ("work", "play")
+  , ("everywhere", "nowhere"), ("all", "none"), ("most", "least"), ("often", "rarely")
+  , ("borrow", "lend"), ("children", "adults"), ("shared", "individual")
+  ]
+
+lookupOpposite : Text -> [(Text, Text)] -> Optional Text
+lookupOpposite w pairs = match pairs with
+  [] -> None
+  (a, b) +: rest ->
+    if a == w then Some b
+    else if b == w then Some a
+    else lookupOpposite w rest
+
+flipWord : Text -> Text
+flipWord w =
+  core = Text.dropEndWhile isClosingPunctuation w
+  suffix = Text.drop (Text.size core) w
+  lowered = Text.toLowercase core
+  match lookupOpposite lowered antonyms with
+    None -> w
+    Some opposite ->
+      if lowered == core then opposite ++ suffix
+      else if (Text.size core > 1) && (Text.toUppercase core == core) then Text.toUppercase opposite ++ suffix
+      else upperFirst opposite ++ suffix
+
+flip : Text -> Text
+flip text =
+  core = dropPrefix "Flip side: " text
+  flipped = joinWords (List.map flipWord (splitWords core))
+  if flipped == core then "Flip side: imagine the exact opposite of this. " ++ core
+  else "Flip side: " ++ flipped
+
+-- One process computes every rule for previews.
+allResults : Text -> Text
+allResults content =
+  entry name result = "\"" ++ name ++ "\": \"" ++ escapeJsonText result ++ "\""
+  entries =
+    [ entry "expand" (expand content)
+    , entry "rephrase" (rephrase content)
+    , entry "mutate_keywords" (mutateKeywords content)
+    , entry "synthesize" (synthesize content)
+    , entry "question" (question content)
+    , entry "twist" (twist content)
+    , entry "headline" (headline content)
+    , entry "flip" (flip content)
+    ]
+  "{\"mutation\": \"all\", \"results\": {" ++ Text.join ", " entries ++ "}}"
+
+-- =======================================================
 -- INFRASTRUCTURE
 -- Formats output safely into JSON for the Python bridge
 -- =======================================================
@@ -119,6 +310,11 @@ main = do
         "rephrase" -> rephrase content
         "mutate_keywords" -> mutateKeywords content
         "synthesize" -> synthesize content
+        "question" -> question content
+        "twist" -> twist content
+        "headline" -> headline content
+        "flip" -> flip content
         _ -> content
-      printLine (formatResponse mutationType result)
+      if mutationType == "all" then printLine (allResults content)
+      else printLine (formatResponse mutationType result)
     _ -> printLine "{\"error\": \"Expected 2 arguments\"}"

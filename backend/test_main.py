@@ -156,7 +156,8 @@ class ApiTests(unittest.TestCase):
         self.create()
         stats = self.client.get('/api/stats').json()
         self.assertEqual((stats['total'], stats['seeds'], stats['max_depth']), (1, 1, 0))
-        self.assertEqual(len(self.client.get('/api/mutations').json()), 4)
+        catalogue = self.client.get('/api/mutations').json()
+        self.assertEqual([m['id'] for m in catalogue], [m.value for m in main.TRANSFORMATIONS])
 
     def test_cross_origin_and_form_writes_rejected(self):
         for origin in ['https://attacker.example', 'null']:
@@ -193,9 +194,9 @@ class ApiTests(unittest.TestCase):
 
     def test_policy_rejections_explain_without_echoing_text(self):
         for content, message in [('secret https://spam.example', 'Links and web addresses'),
-                                 ('secret ‮gnp', 'Invisible or direction-changing'),
-                                 ('​​', 'Invisible or direction-changing'),
-                                 ('secret' + '́' * 9, 'stacked accent')]:
+                                 ('secret \u202egnp', 'Invisible or direction-changing'),
+                                 ('\u200b\u200b', 'Invisible or direction-changing'),
+                                 ('secret' + '\u0301' * 9, 'stacked accent')]:
             response = self.client.post('/api/idea', json={'content': content})
             self.assertEqual(response.status_code, 422, response.text)
             self.assertIn(message, response.json()['detail'][0]['message'])
@@ -274,6 +275,49 @@ class ApiTests(unittest.TestCase):
         allowed = sum(limiter.allow(client_key(f'2001:db8::{i:x}')) for i in range(50))
         self.assertEqual(allowed, 2)
 
+    def test_unchanged_branches_are_rejected(self):
+        root = self.create('Same text')
+        self.assertEqual(self.client.post('/api/idea', json={'content': 'Same text ', 'parent_id': root['id']}).status_code, 422)
+        with patch.object(main, 'run_mutation', new_callable=AsyncMock, return_value='Same text'):
+            response = self.client.post('/api/idea', json={'parent_id': root['id'], 'mutation': 'headline'})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('unchanged', response.json()['detail'])
+
+    def test_idea_preview_is_cached_and_marks_existing_branches(self):
+        root = self.create('Plant a garden')
+        results = {m.value: f'{m.value} result' for m in main.TRANSFORMATIONS}
+        results['headline'] = 'Plant a garden'
+        results['flip'] = None
+        main.preview_cache.clear()
+        with patch.object(main, 'run_mutation', new_callable=AsyncMock, return_value='expand result'):
+            child = self.client.post('/api/idea', json={'parent_id': root['id'], 'mutation': 'expand'}).json()
+        with patch.object(main, 'run_all', new_callable=AsyncMock, return_value=results) as engine:
+            first = self.client.get(f"/api/idea/{root['id']}/preview")
+            second = self.client.get(f"/api/idea/{root['id']}/preview")
+        self.assertEqual(first.status_code, 200)
+        engine.assert_awaited_once_with('Plant a garden')
+        self.assertEqual(first.json(), second.json())
+        rows = {row['mutation']: row for row in first.json()['results']}
+        self.assertEqual(list(rows), [m.value for m in main.TRANSFORMATIONS])
+        self.assertEqual(rows['expand']['existing_id'], child['id'])
+        self.assertTrue(rows['headline']['unchanged'])
+        self.assertIsNone(rows['flip']['content'])
+        self.assertEqual(self.client.get('/api/idea/999/preview').status_code, 404)
+        self.assertEqual(self.client.get('/api/stats').json()['total'], 2)
+
+    def test_draft_preview_applies_policy_and_stores_nothing(self):
+        results = {m.value: 'x' for m in main.TRANSFORMATIONS}
+        with patch.object(main, 'run_all', new_callable=AsyncMock, return_value=results) as engine:
+            response = self.client.post('/api/preview', json={'content': '  A draft  '})
+            rejected = self.client.post('/api/preview', json={'content': 'see www.spam.example'})
+        self.assertEqual(response.status_code, 200)
+        engine.assert_awaited_once_with('A draft')
+        self.assertEqual(len(response.json()['results']), len(main.TRANSFORMATIONS))
+        self.assertEqual(rejected.status_code, 422)
+        self.assertEqual(self.client.get('/api/stats').json()['total'], 0)
+        with patch.object(main.limiters['preview'], 'capacity', 0):
+            self.assertEqual(self.client.post('/api/preview', json={'content': 'again'}).status_code, 429)
+
     def test_docs_disabled(self):
         self.assertEqual(self.client.get('/docs').status_code, 404)
         self.assertEqual(self.client.get('/openapi.json').status_code, 404)
@@ -328,6 +372,18 @@ class AsyncBoundaryTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as error:
                 await main.run_mutation(main.Mutation.EXPAND, 'x')
             self.assertEqual(error.exception.status_code, 502)
+
+    async def test_all_mode_contract_drops_only_unusable_results(self):
+        self.engine('import json; r={"expand":"ok","rephrase":"x\\u202ey","question":""}; '
+                    'print(json.dumps({"mutation":"all","results":r}))')
+        results = await main.run_all('x')
+        self.assertEqual(results['expand'], 'ok')
+        self.assertIsNone(results['rephrase'])
+        self.assertIsNone(results['question'])
+        self.assertIsNone(results['flip'])
+        self.engine('import json; print(json.dumps({"mutation":"all","results":[]}))')
+        with self.assertRaises(HTTPException):
+            await main.run_all('x')
 
     async def test_output_cap_and_timeout(self):
         self.engine('print("x" * 1000000)')

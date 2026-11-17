@@ -1,9 +1,15 @@
-export type Mutation =
+export type KnownMutation =
   | "base"
   | "expand"
   | "rephrase"
   | "mutate_keywords"
-  | "synthesize";
+  | "synthesize"
+  | "question"
+  | "twist"
+  | "headline"
+  | "flip";
+// Newer servers may add rules; unknown names still render with a generic label.
+export type Mutation = KnownMutation | (string & {});
 export interface Idea {
   id: number;
   parent_id: number | null;
@@ -21,7 +27,7 @@ export interface Stats {
   max_branch_depth: number;
 }
 export const mutations: {
-  id: Mutation;
+  id: KnownMutation;
   name: string;
   description: string;
   symbol: string;
@@ -50,6 +56,30 @@ export const mutations: {
     description: "Keep alternating words and find the essence.",
     symbol: "↙",
   },
+  {
+    id: "question",
+    name: "Question",
+    description: "Turn it into a what-if question. Repeat for new angles.",
+    symbol: "?",
+  },
+  {
+    id: "twist",
+    name: "Twist",
+    description: "Add a surprising constraint chosen by the text itself.",
+    symbol: "↯",
+  },
+  {
+    id: "headline",
+    name: "Headline",
+    description: "Condense it into a punchy title-case headline.",
+    symbol: "H",
+  },
+  {
+    id: "flip",
+    name: "Flip",
+    description: "Swap words for their opposites and test the reverse.",
+    symbol: "⇅",
+  },
 ];
 export const mutationName = (id: Mutation) =>
   id === "base"
@@ -62,7 +92,8 @@ export const isIdea = (value: unknown): value is Idea => {
     Number.isSafeInteger(x.id) &&
     x.id > 0 &&
     typeof x.content === "string" &&
-    ["base", ...mutations.map((m) => m.id)].includes(x.mutation) &&
+    typeof x.mutation === "string" &&
+    /^[a-z_]{1,32}$/.test(x.mutation) &&
     (x.parent_id === null || Number.isSafeInteger(x.parent_id)) &&
     Number.isInteger(x.depth) &&
     Number.isInteger(x.root_id)

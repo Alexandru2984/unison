@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   exportMarkdown,
+  isIdea,
   mergeIdeas,
+  mutationName,
   readStorage,
   wordCount,
   wordDiff,
@@ -67,4 +69,12 @@ test("storage failures are contained and word counts handle whitespace", () => {
   );
   assert.equal(wordCount("  Grădină\t🌱\nshared "), 3);
   assert.equal(wordCount(" \n\t"), 0);
+});
+test("accepts transformations added by a newer server without breaking the page", () => {
+  assert.equal(isIdea({ ...seed, mutation: "twist" }), true);
+  assert.equal(isIdea({ ...seed, mutation: "future_rule" }), true);
+  assert.equal(mutationName("future_rule"), "future_rule");
+  assert.equal(mutationName("flip"), "Flip");
+  for (const mutation of ["", "<script>", "x".repeat(33), 5, null])
+    assert.equal(isIdea({ ...seed, mutation }), false);
 });

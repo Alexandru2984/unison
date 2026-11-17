@@ -118,7 +118,11 @@ if [[ -z "$previous_backend" ]]; then
 fi
 printf '%s\n' "$previous_backend" > "$backup_dir/previous-backend"
 install -d -m 0755 "$backend_release"
-install -m 0644 "$project_dir/backend/main.py" "$project_dir/backend/security.py" "$project_dir/backend/moderation.py" "$project_dir/backend/requirements.txt" "$backend_release/"
+runtime_files=()
+for module in "$project_dir"/backend/*.py; do
+  [[ "$(basename "$module")" == test_* ]] || runtime_files+=("$module")
+done
+install -m 0644 "${runtime_files[@]}" "$project_dir/backend/requirements.txt" "$project_dir/backend/capabilities.json" "$backend_release/"
 install -m 0644 "$engine_build_dir/evolution.uc" "$backend_release/evolution.uc"
 printf 'APP_REVISION=%s\n' "$revision" > "$backend_release/runtime.env"
 chmod 0644 "$backend_release/runtime.env"

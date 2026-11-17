@@ -22,20 +22,36 @@ def request(path, payload=None):
 health = request('/api/health')
 assert health['engine_available']
 assert health['revision'] == sys.argv[2][:12], 'Candidate revision does not match'
+MUTATIONS = ['expand', 'rephrase', 'mutate_keywords', 'synthesize', 'question', 'twist', 'headline', 'flip']
 seed = request('/api/idea', {'content': 'Deploy check: Grădină 🌱 "quotes" C:\\notes\nline'})
-for mutation in ['expand', 'rephrase', 'mutate_keywords', 'synthesize']:
+preview = request(f"/api/idea/{seed['id']}/preview")
+assert [row['mutation'] for row in preview['results']] == MUTATIONS
+assert all(row['content'] and row['existing_id'] is None for row in preview['results'])
+draft = request('/api/preview', {'content': 'Build a calmer internet'})
+assert {row['mutation']: row['content'] for row in draft['results']}['question'] == 'What if we build a calmer internet?'
+for mutation in MUTATIONS:
     result = request('/api/idea', {'parent_id': seed['id'], 'mutation': mutation})
     assert result['parent_id'] == seed['id'] and result['depth'] == 1
     assert result['content'] and not result['content'].startswith('{')
+    assert result['content'] == {row['mutation']: row['content'] for row in preview['results']}[mutation]
     assert len(request(f"/api/idea/{result['id']}/lineage")) == 2
+assert request('/api/idea', {'parent_id': seed['id'], 'mutation': 'expand'})['parent_id'] == seed['id']
+for rejected in [{'content': 'visit www.spam.example'}, {'content': 'x\u202ey'}]:
+    try:
+        request('/api/idea', rejected)
+    except HTTPError as error:
+        assert error.code == 422
+    else:
+        raise AssertionError('Text policy accepted an invalid idea')
+TOTAL = 1 + len(MUTATIONS)
 try:
     request('/api/idea', {'content': 'orphan', 'parent_id': 999})
 except HTTPError as error:
     assert error.code == 404
 else:
     raise AssertionError('Orphan parent was accepted')
-assert request('/api/stats')['total'] == 5
-assert len(request('/api/mutations')) == 4
+assert request('/api/stats')['total'] == TOTAL
+assert [row['id'] for row in request('/api/mutations')] == MUTATIONS
 # Operator tests are restricted to this candidate's disposable database.
 database = Path(sys.argv[3]).resolve()
 assert database.parent.name.startswith('unison-deploy-verify.') and database.parent.parent == Path('/tmp')
@@ -49,7 +65,7 @@ def moderate(*args):
 for _ in range(2):
     assert request(f"/api/idea/{seed['id']}/report", {'reason': 'privacy'}) == {'status': 'received'}
 assert len(moderate('queue')) == 1
-assert moderate('hide', str(seed['id']), '--reason', 'privacy')['affected'] == 5
+assert moderate('hide', str(seed['id']), '--reason', 'privacy')['affected'] == TOTAL
 assert request('/api/idea') == []
 assert request('/api/stats')['total'] == 0
 for path in [f"/api/idea/{seed['id']}", f"/api/idea/{result['id']}/lineage"]:
@@ -59,8 +75,8 @@ for path in [f"/api/idea/{seed['id']}", f"/api/idea/{result['id']}/lineage"]:
         assert error.code == 404
     else:
         raise AssertionError('Hidden content was publicly readable')
-assert moderate('restore', str(seed['id']))['affected'] == 5
-assert request('/api/stats')['total'] == 5
+assert moderate('restore', str(seed['id']))['affected'] == TOTAL
+assert request('/api/stats')['total'] == TOTAL
 assert request('/api/stats')['board_revision'] == 2
 assert request(f"/api/idea/{seed['id']}")['content'] == seed['content']
 assert moderate('queue') == []
