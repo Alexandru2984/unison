@@ -5,7 +5,7 @@ umask 077
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if (( EUID != 0 )); then echo 'Run sudo ./deploy.sh after committing and validating the release.' >&2; exit 1; fi
 if [[ "$project_dir" != /home/micu/unisonTrying ]]; then echo 'Review the fixed VPS paths before deploying from another checkout.' >&2; exit 1; fi
-git_repo() { git -c safe.directory="$project_dir" -C "$project_dir" "$@"; }
+git_repo() { GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$project_dir" -C "$project_dir" "$@"; }
 exec 9>/run/lock/unison-deploy.lock
 flock -n 9 || { echo 'Another Unison deployment is running.' >&2; exit 1; }
 for program in git python3 npm nginx systemctl install runuser setsid curl tar; do command -v "$program" >/dev/null; done
@@ -38,6 +38,10 @@ rollback() {
   local exit_status=$?
   trap - ERR
   set +e
+  if [[ -n "$verification_dir" && -f "$verification_dir/server.log" && -d "$backup_dir" ]]; then
+    install -m 0600 "$verification_dir/server.log" "$backup_dir/candidate.log"
+    echo "Candidate diagnostics preserved at $backup_dir/candidate.log" >&2
+  fi
   if (( armed )); then
     echo 'Deployment failed. Restoring previous frontend, API and Nginx files.' >&2
     ln -s "$previous_frontend" "$site_root/.rollback-$$"
@@ -80,7 +84,9 @@ run_builder env UNISON_OUTPUT="$engine_build_dir/evolution.uc" python3 "$project
 run_builder npm --prefix "$project_dir/frontend" run build
 run_builder env RUN_ENGINE_TESTS=1 UNISON_PROGRAM="$engine_build_dir/evolution.uc" "$project_dir/backend/.venv/bin/python" -m unittest discover -s "$project_dir/backend" -p test_engine.py -v
 [[ -s "$project_dir/frontend/dist/index.html" ]]
-install -d -m 0755 "$site_root/releases" "$api_root/releases"
+# Explicitly set the parent mode: install -d otherwise applies the private
+# deployment umask to a newly created /opt/unison-backend parent.
+install -d -m 0755 "$site_root" "$site_root/releases" "$api_root" "$api_root/releases"
 install -d -m 0700 "$backup_dir"
 python3 "$project_dir/scripts/backup_database.py" /var/lib/unison-backend/evolution.db "$backup_dir/evolution.db"
 for pair in '/etc/nginx/sites-available/unison:unison.conf' '/etc/nginx/conf.d/unison-limits.conf:unison-limits.conf' '/etc/nginx/snippets/unison-headers.conf:unison-headers.conf' '/etc/nginx/snippets/unison-proxy.conf:unison-proxy.conf' '/etc/systemd/system/unison-backend.service:service.unit'; do
