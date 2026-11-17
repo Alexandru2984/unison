@@ -7,7 +7,7 @@ import re
 import signal
 import sqlite3
 import unicodedata
-from contextlib import closing
+from contextlib import asynccontextmanager, closing, suppress
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketDisconnect
 from security import ApiSecurityMiddleware, RateLimiter
+from moderation import ReportReason, board_revision, init_moderation, now
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=PROJECT_DIR / '.env', override=False)
@@ -46,12 +47,40 @@ MAX_DEPTH = 32
 MAX_RESULT_CHARACTERS = 4096
 MAX_PROCESS_BYTES = 65_536
 MAX_CLIENTS = 48
+MAX_REPORTS = 10_000
+MODERATION_POLL_SECONDS = 1
 MUTATION_TIMEOUT_SECONDS = bounded_int('MUTATION_TIMEOUT_SECONDS', 5, 1, 30)
 IDEA_FIELDS = 'id, parent_id, content, mutation, created_at, root_id, depth'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+async def watch_moderation():
+    with closing(connect_db()) as conn:
+        revision = board_revision(conn)
+    while True:
+        await asyncio.sleep(MODERATION_POLL_SECONDS)
+        try:
+            with closing(connect_db()) as conn:
+                current = board_revision(conn)
+            if current != revision:
+                revision = current
+                await broadcast_idea({'event': 'board_changed', 'revision': current})
+        except sqlite3.Error:
+            logger.warning('Moderation state check failed')
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    task = asyncio.create_task(watch_moderation())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 docs_enabled = os.getenv('ENABLE_API_DOCS', '').lower() == 'true'
-app = FastAPI(title='Idea Evolution API', docs_url='/docs' if docs_enabled else None,
+app = FastAPI(lifespan=lifespan, title='Idea Evolution API', docs_url='/docs' if docs_enabled else None,
               redoc_url='/redoc' if docs_enabled else None, openapi_url='/openapi.json' if docs_enabled else None)
 write_limiter = RateLimiter()
 socket_limiter = RateLimiter(capacity=12, per_minute=12)
@@ -106,6 +135,7 @@ def init_db() -> None:
         conn.execute('CREATE INDEX IF NOT EXISTS ideas_root ON ideas(root_id, id)')
         conn.execute('CREATE INDEX IF NOT EXISTS ideas_mutation ON ideas(mutation, id)')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS ideas_request_key ON ideas(request_key) WHERE request_key IS NOT NULL')
+        init_moderation(conn)
         conn.commit()
 
 
@@ -226,7 +256,7 @@ async def run_mutation(mutation: Mutation, content: str) -> str:
 def get_parent(conn, parent_id):
     if parent_id is None:
         return None
-    row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ?', (parent_id,)).fetchone()
+    row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (parent_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail='Parent idea not found')
     if row['depth'] >= MAX_DEPTH:
@@ -251,9 +281,11 @@ async def create_idea(req: IdeaRequest, response: Response, idempotency_key: str
     def replay(conn):
         if idempotency_key is None:
             return None
-        row = conn.execute(f'SELECT {IDEA_FIELDS}, request_hash FROM ideas WHERE request_key = ?', (idempotency_key,)).fetchone()
+        row = conn.execute(f'SELECT {IDEA_FIELDS}, request_hash, hidden FROM ideas WHERE request_key = ?', (idempotency_key,)).fetchone()
         if row is None:
             return None
+        if row['hidden']:
+            raise HTTPException(status_code=404, detail='Idea not found')
         if row['request_hash'] != request_hash:
             raise HTTPException(status_code=409, detail='Idempotency key was already used for a different idea')
         response.status_code = 200
@@ -285,7 +317,7 @@ async def create_idea(req: IdeaRequest, response: Response, idempotency_key: str
                 conn.execute('UPDATE ideas SET root_id = ? WHERE id = ?', (idea_id, idea_id))
             idea = dict(conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ?', (idea_id,)).fetchone())
             conn.commit()
-    await broadcast_idea(idea)
+    await broadcast_idea({'event': 'ideas_changed'})
     return idea
 
 
@@ -297,7 +329,7 @@ async def get_ideas(response: Response, before: int | None = Query(default=None,
                     ids: str | None = Query(default=None, max_length=700)):
     if before is not None and after is not None:
         raise HTTPException(status_code=422, detail='Use either before or after')
-    clauses, values = [], []
+    clauses, values = ['hidden=0'], []
     if roots_only:
         clauses.append('parent_id IS NULL')
     if ids is not None:
@@ -317,6 +349,8 @@ async def get_ideas(response: Response, before: int | None = Query(default=None,
     order = 'ASC' if after is not None else 'DESC'
     page_size = min(limit, MAX_RESULTS)
     with closing(connect_db()) as conn:
+        conn.execute('BEGIN')
+        response.headers['X-Board-Revision'] = str(board_revision(conn))
         rows = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas{where} ORDER BY id {order} LIMIT ?', (*values, page_size + 1)).fetchall()
     response.headers['X-Has-More'] = str(len(rows) > page_size).lower()
     rows = rows[:page_size]
@@ -330,7 +364,7 @@ async def get_ideas(response: Response, before: int | None = Query(default=None,
 @app.get('/api/idea/{idea_id}')
 async def get_idea(idea_id: int):
     with closing(connect_db()) as conn:
-        row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ?', (idea_id,)).fetchone()
+        row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail='Idea not found')
     return dict(row)
@@ -340,9 +374,10 @@ async def get_idea(idea_id: int):
 async def get_lineage(idea_id: int):
     lineage, seen = [], set()
     with closing(connect_db()) as conn:
+        conn.execute('BEGIN')
         while idea_id is not None and idea_id not in seen and len(lineage) <= MAX_DEPTH:
             seen.add(idea_id)
-            row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ?', (idea_id,)).fetchone()
+            row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
             if row is None:
                 if not lineage:
                     raise HTTPException(status_code=404, detail='Idea not found')
@@ -355,12 +390,36 @@ async def get_lineage(idea_id: int):
 @app.get('/api/stats')
 async def get_stats():
     with closing(connect_db()) as conn:
+        conn.execute('BEGIN')
         summary = dict(conn.execute('''SELECT COUNT(*) AS total, COALESCE(SUM(parent_id IS NULL), 0) AS seeds,
-            COALESCE(MAX(depth), 0) AS max_depth, MAX(id) AS latest_id FROM ideas''').fetchone())
-        summary['mutations'] = {row['mutation']: row['count'] for row in conn.execute('SELECT mutation, COUNT(*) AS count FROM ideas GROUP BY mutation')}
+            COALESCE(MAX(depth), 0) AS max_depth, MAX(id) AS latest_id FROM ideas WHERE hidden=0''').fetchone())
+        summary['board_revision'] = board_revision(conn)
+        summary['mutations'] = {row['mutation']: row['count'] for row in conn.execute('SELECT mutation, COUNT(*) AS count FROM ideas WHERE hidden=0 GROUP BY mutation')}
     summary['capacity'] = MAX_IDEAS
     summary['max_branch_depth'] = MAX_DEPTH
     return summary
+
+
+class ReportRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    reason: ReportReason
+
+
+@app.post('/api/idea/{idea_id}/report', status_code=202)
+async def report_idea(idea_id: int, req: ReportRequest):
+    with closing(connect_db()) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if conn.execute('SELECT 1 FROM ideas WHERE id=? AND hidden=0', (idea_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail='Idea not found')
+        existing = conn.execute("SELECT 1 FROM idea_reports WHERE idea_id=? AND reason=? AND status='open'", (idea_id, req.reason.value)).fetchone()
+        if existing is None:
+            if conn.execute('SELECT COUNT(*) FROM idea_reports').fetchone()[0] >= MAX_REPORTS:
+                raise HTTPException(status_code=503, detail='Reporting is temporarily unavailable. Please try again later.')
+            conn.execute('INSERT INTO idea_reports(idea_id,reason,created_at) VALUES(?,?,?)', (idea_id, req.reason.value, now()))
+            conn.commit()
+    # Do not expose report IDs, counts or previous reports. Reports never hide
+    # content automatically, and no IP, browser identifier or free text is stored.
+    return {'status': 'received'}
 
 
 @app.get('/api/mutations')

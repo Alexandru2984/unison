@@ -46,8 +46,14 @@ rollback() {
     echo 'Deployment failed. Restoring previous frontend, API and Nginx files.' >&2
     ln -s "$previous_frontend" "$site_root/.rollback-$$"
     mv -Tf "$site_root/.rollback-$$" "$site_root/current"
-    ln -s "$previous_backend" "$api_root/.rollback-$$"
-    mv -Tf "$api_root/.rollback-$$" "$api_root/current"
+    rollback_api_safe=1
+    if python3 "$project_dir/scripts/rollback_compatible.py" "$previous_backend" /var/lib/unison-backend/evolution.db; then
+      ln -s "$previous_backend" "$api_root/.rollback-$$"
+      mv -Tf "$api_root/.rollback-$$" "$api_root/current"
+    else
+      rollback_api_safe=0
+      echo 'Refusing an API rollback that could expose moderated content. API is stopped for operator review.' >&2
+    fi
     for name in unison.conf unison-limits.conf unison-headers.conf unison-proxy.conf; do
       case "$name" in
         unison.conf) destination=/etc/nginx/sites-available/unison ;;
@@ -59,7 +65,7 @@ rollback() {
     # Retain the hardened versioned service: its previous-release symlink is
     # sufficient to restore code, even on the first migration from the checkout.
     systemctl daemon-reload
-    systemctl restart unison-backend
+    if (( rollback_api_safe )); then systemctl restart unison-backend; else systemctl stop unison-backend; fi
     nginx -t && systemctl reload nginx
     echo "Rollback attempted. Inspect service health and private backups: $backup_dir" >&2
   fi
@@ -112,7 +118,7 @@ if [[ -z "$previous_backend" ]]; then
 fi
 printf '%s\n' "$previous_backend" > "$backup_dir/previous-backend"
 install -d -m 0755 "$backend_release"
-install -m 0644 "$project_dir/backend/main.py" "$project_dir/backend/security.py" "$project_dir/backend/requirements.txt" "$backend_release/"
+install -m 0644 "$project_dir/backend/main.py" "$project_dir/backend/security.py" "$project_dir/backend/moderation.py" "$project_dir/backend/requirements.txt" "$backend_release/"
 install -m 0644 "$engine_build_dir/evolution.uc" "$backend_release/evolution.uc"
 printf 'APP_REVISION=%s\n' "$revision" > "$backend_release/runtime.env"
 chmod 0644 "$backend_release/runtime.env"

@@ -184,7 +184,7 @@ class ApiTests(unittest.TestCase):
                 pass
         with self.client.websocket_connect('/ws', headers={'Origin': main.PUBLIC_ORIGIN}) as ws:
             idea = self.create()
-            self.assertEqual(ws.receive_json(), idea)
+            self.assertEqual(ws.receive_json(), {'event': 'ideas_changed'})
             ws.send_text('unsolicited')
             self.assertEqual(ws.receive()['code'], 1008)
         self.assertFalse(main.clients)
