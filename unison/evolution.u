@@ -94,8 +94,13 @@ synthesize text =
 -- Formats output safely into JSON for the Python bridge
 -- =======================================================
 escapeJsonText : Text -> Text
-escapeJsonText t = 
-  Text.replaceAll "\"" "\\\"" (Text.replaceAll "\n" " " t)
+escapeJsonText t =
+  -- Escape backslashes first so escapes introduced below remain intact.
+  slashes = Text.replaceAll "\\" "\\\\" t
+  quotes = Text.replaceAll "\"" "\\\"" slashes
+  lines = Text.replaceAll "\n" "\\n" quotes
+  returns = Text.replaceAll "\r" "\\r" lines
+  Text.replaceAll "\t" "\\t" returns
 
 formatResponse : Text -> Text -> Text
 formatResponse mutationType result =
