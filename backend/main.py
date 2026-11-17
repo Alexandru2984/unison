@@ -292,10 +292,19 @@ async def create_idea(req: IdeaRequest, response: Response, idempotency_key: str
 async def get_ideas(response: Response, before: int | None = Query(default=None, gt=0),
                     after: int | None = Query(default=None, ge=0), limit: int = Query(default=200, ge=1, le=500),
                     q: str = Query(default='', max_length=200), root_id: int | None = Query(default=None, gt=0),
-                    mutation: Mutation | None = None):
+                    mutation: Mutation | None = None, roots_only: bool = False,
+                    ids: str | None = Query(default=None, max_length=700)):
     if before is not None and after is not None:
         raise HTTPException(status_code=422, detail='Use either before or after')
     clauses, values = [], []
+    if roots_only:
+        clauses.append('parent_id IS NULL')
+    if ids is not None:
+        parts = ids.split(',')
+        if len(parts) > 100 or any(not re.fullmatch(r'[1-9][0-9]{0,9}', part) for part in parts):
+            raise HTTPException(status_code=422, detail='Use up to 100 positive idea IDs')
+        clauses.append('id IN (' + ','.join('?' for _ in parts) + ')')
+        values.extend(int(part) for part in parts)
     for condition, value in [('id < ?', before), ('id > ?', after), ('root_id = ?', root_id), ('mutation = ?', mutation)]:
         if value is not None:
             clauses.append(condition)
