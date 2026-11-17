@@ -15,8 +15,8 @@ from moderation import ReportReason, apply_rule, close_report
 
 def positive(value):
     number = int(value)
-    if number <= 0:
-        raise argparse.ArgumentTypeError('Use a positive ID')
+    if not 0 < number <= 2**63 - 1:
+        raise argparse.ArgumentTypeError('Use a positive SQLite idea/report ID')
     return number
 
 

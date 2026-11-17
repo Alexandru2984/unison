@@ -134,6 +134,16 @@ class ModerationTests(unittest.TestCase):
         self.assertTrue(self.cli('restore', str(root['id']))['changed'])
         self.cli('hide', '999', '--reason', 'spam', success=False)
 
+    def test_oversized_sqlite_ids_are_rejected_without_server_errors(self):
+        huge = 2**63
+        self.assertEqual(self.client.post('/api/idea', json={'content': 'x', 'parent_id': huge}).status_code, 422)
+        for path in [f'/api/idea/{huge}', f'/api/idea/{huge}/lineage']:
+            self.assertEqual(self.client.get(path).status_code, 422)
+        self.assertEqual(self.client.post(f'/api/idea/{huge}/report', json={'reason': 'spam'}).status_code, 422)
+        for parameter in ['before', 'after', 'root_id']:
+            self.assertEqual(self.client.get('/api/idea', params={parameter: huge}).status_code, 422)
+        self.cli('show', str(huge), success=False)
+
     def test_socket_notification_has_no_moderated_text(self):
         root = self.create('never broadcast this hidden text')
         with self.client.websocket_connect('/ws', headers={'Origin': main.PUBLIC_ORIGIN}) as socket:

@@ -12,9 +12,10 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
+from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, WebSocket
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -44,6 +45,8 @@ PUBLIC_ORIGIN = os.getenv('PUBLIC_ORIGIN', 'https://unison.micutu.com').rstrip('
 MAX_IDEAS = bounded_int('MAX_IDEAS', 10_000, 100, 100_000)
 MAX_RESULTS = bounded_int('MAX_RESULTS', 500, 10, 2_000)
 MAX_DEPTH = 32
+MAX_SQLITE_ID = 2**63 - 1
+IdeaId = Annotated[int, PathParam(gt=0, le=MAX_SQLITE_ID)]
 MAX_RESULT_CHARACTERS = 4096
 MAX_PROCESS_BYTES = 65_536
 MAX_CLIENTS = 48
@@ -153,7 +156,7 @@ class Mutation(StrEnum):
 class IdeaRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     content: str = Field(default='', max_length=2000, strict=True)
-    parent_id: int | None = Field(default=None, gt=0, strict=True)
+    parent_id: int | None = Field(default=None, gt=0, le=MAX_SQLITE_ID, strict=True)
     mutation: Mutation = Mutation.BASE
 
     @model_validator(mode='after')
@@ -322,9 +325,9 @@ async def create_idea(req: IdeaRequest, response: Response, idempotency_key: str
 
 
 @app.get('/api/idea')
-async def get_ideas(response: Response, before: int | None = Query(default=None, gt=0),
-                    after: int | None = Query(default=None, ge=0), limit: int = Query(default=200, ge=1, le=500),
-                    q: str = Query(default='', max_length=200), root_id: int | None = Query(default=None, gt=0),
+async def get_ideas(response: Response, before: int | None = Query(default=None, gt=0, le=MAX_SQLITE_ID),
+                    after: int | None = Query(default=None, ge=0, le=MAX_SQLITE_ID), limit: int = Query(default=200, ge=1, le=500),
+                    q: str = Query(default='', max_length=200), root_id: int | None = Query(default=None, gt=0, le=MAX_SQLITE_ID),
                     mutation: Mutation | None = None, roots_only: bool = False,
                     ids: str | None = Query(default=None, max_length=700)):
     if before is not None and after is not None:
@@ -362,7 +365,7 @@ async def get_ideas(response: Response, before: int | None = Query(default=None,
 
 
 @app.get('/api/idea/{idea_id}')
-async def get_idea(idea_id: int):
+async def get_idea(idea_id: IdeaId):
     with closing(connect_db()) as conn:
         row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
     if row is None:
@@ -371,7 +374,7 @@ async def get_idea(idea_id: int):
 
 
 @app.get('/api/idea/{idea_id}/lineage')
-async def get_lineage(idea_id: int):
+async def get_lineage(idea_id: IdeaId):
     lineage, seen = [], set()
     with closing(connect_db()) as conn:
         conn.execute('BEGIN')
@@ -406,7 +409,7 @@ class ReportRequest(BaseModel):
 
 
 @app.post('/api/idea/{idea_id}/report', status_code=202)
-async def report_idea(idea_id: int, req: ReportRequest):
+async def report_idea(idea_id: IdeaId, req: ReportRequest):
     with closing(connect_db()) as conn:
         conn.execute('BEGIN IMMEDIATE')
         if conn.execute('SELECT 1 FROM ideas WHERE id=? AND hidden=0', (idea_id,)).fetchone() is None:
