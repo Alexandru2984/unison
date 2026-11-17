@@ -60,7 +60,6 @@ const IdeaCard = memo(function IdeaCard({
       </div>
       <button
         className="node-open nodrag"
-        aria-label={`Explore idea ${data.idea.id}: ${data.idea.content.slice(0, 160)}`}
         onClick={(event) => {
           event.stopPropagation();
           data.onSelect(data.idea);

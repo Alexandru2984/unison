@@ -80,9 +80,10 @@ class ApiSecurityMiddleware:
                 message = await receive()
                 if message['type'] == 'http.disconnect':
                     return False
-                body.extend(message.get('body', b''))
-                if len(body) > self.max_body:
+                chunk = message.get('body', b'')
+                if len(body) + len(chunk) > self.max_body:
                     return None
+                body.extend(chunk)
                 if not message.get('more_body', False):
                     return True
         try:

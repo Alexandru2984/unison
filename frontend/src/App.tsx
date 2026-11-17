@@ -147,6 +147,9 @@ export default function App() {
   }, [search]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", theme === "dark" ? "#131c17" : "#f8f9f6");
     storeLocal("idea-evolution:theme", theme);
   }, [theme]);
   useEffect(() => {
@@ -199,14 +202,12 @@ export default function App() {
     history.replaceState(null, "", `#idea-${idea.id}`);
     if (innerWidth < 720)
       requestAnimationFrame(() =>
-        document
-          .querySelector(".inspector.has-selection")
-          ?.scrollIntoView({
-            behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
-              ? "instant"
-              : "smooth",
-            block: "start",
-          }),
+        document.querySelector(".inspector.has-selection")?.scrollIntoView({
+          behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? "instant"
+            : "smooth",
+          block: "start",
+        }),
       );
   }, []);
   const clearSelection = useCallback(() => {
@@ -417,7 +418,7 @@ export default function App() {
         Skip to workspace
       </a>
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Idea Evolution home">
+        <a className="brand" href="/">
           <span className="brand-mark">
             <Icon name="graph" size={23} />
           </span>

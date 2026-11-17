@@ -237,7 +237,7 @@
   color: var(--text);
 }
 .composer textarea::placeholder {
-  color: #8a968b;
+  color: var(--muted);
 }
 .composer-meta {
   display: flex;
@@ -614,15 +614,15 @@
 }
 .tag.rephrase {
   background: #fbf0df;
-  color: #956d3b;
+  color: #805a2c;
 }
 .tag.mutate_keywords {
   background: #f9eaf0;
-  color: #985c76;
+  color: #854a63;
 }
 .tag.synthesize {
   background: #e7f1ef;
-  color: #4a7c70;
+  color: #3d6b5e;
 }
 :root[data-theme="dark"] .tag {
   background: #30452e;
@@ -911,7 +911,7 @@
 .how-steps > div > span {
   font-size: 9px;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  color: #869a77;
+  color: var(--muted);
   padding-top: 2px;
 }
 .how-steps p {
@@ -1085,15 +1085,15 @@
 }
 .rephrase .transform-symbol {
   background: #fbf0df;
-  color: #956d3b;
+  color: #805a2c;
 }
 .mutate_keywords .transform-symbol {
   background: #f9eaf0;
-  color: #985c76;
+  color: #854a63;
 }
 .synthesize .transform-symbol {
   background: #e7f1ef;
-  color: #4a7c70;
+  color: #3d6b5e;
 }
 .transform-button > span:nth-child(2) {
   flex: 1;
@@ -2129,4 +2129,15 @@
     padding-left: 6px;
     padding-right: 6px;
   }
+}
+
+.react-flow__attribution a {
+  color: var(--muted) !important;
+}
+
+:root[data-theme="dark"] .is-saved {
+  color: #d8bf6e !important;
+}
+:root[data-theme="dark"] .error-text {
+  color: #e2a08b;
 }

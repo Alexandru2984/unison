@@ -12,3 +12,14 @@ frontend/node_modules/
 *.sqlite3
 .DS_Store
 ucm-bin/
+.env.*
+!.env.example
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.uc.tmp
+*.output.md
+.unisonHistory
+dscd
+frontend/playwright-report/
+frontend/test-results/

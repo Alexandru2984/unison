@@ -31,6 +31,7 @@ fi
 owner="$(stat -c %U "$project_dir")"
 run_builder() { runuser -u "$owner" -- bash -c 'umask 022; exec "$@"' unison-build "$@"; }
 verification_dir=''
+engine_build_dir=''
 candidate_pid=''
 armed=0
 rollback() {
@@ -63,6 +64,7 @@ rollback() {
 cleanup() {
   if [[ -n "$candidate_pid" ]]; then kill -TERM -- "-$candidate_pid" 2>/dev/null || true; fi
   if [[ -n "$verification_dir" ]]; then rm -rf -- "$verification_dir"; fi
+  if [[ -n "$engine_build_dir" ]]; then rm -rf -- "$engine_build_dir"; fi
 }
 trap rollback ERR
 trap cleanup EXIT
@@ -70,9 +72,13 @@ trap cleanup EXIT
 # Build as the checkout owner, never as root. No development dependencies are
 # added to the live environment; the test suite is run before this script.
 run_builder "$project_dir/backend/.venv/bin/pip" install --disable-pip-version-check -r "$project_dir/backend/requirements.txt"
-run_builder python3 "$project_dir/scripts/build_unison.py"
+engine_build_dir="$(mktemp -d /tmp/unison-release-build.XXXXXX)"
+chown "$owner" "$engine_build_dir"
+# During the first migration the old service still reads the checkout's .uc.
+# Build elsewhere so candidate verification cannot change its live behavior.
+run_builder env UNISON_OUTPUT="$engine_build_dir/evolution.uc" python3 "$project_dir/scripts/build_unison.py"
 run_builder npm --prefix "$project_dir/frontend" run build
-run_builder env RUN_ENGINE_TESTS=1 "$project_dir/backend/.venv/bin/python" -m unittest discover -s "$project_dir/backend" -p test_engine.py -v
+run_builder env RUN_ENGINE_TESTS=1 UNISON_PROGRAM="$engine_build_dir/evolution.uc" "$project_dir/backend/.venv/bin/python" -m unittest discover -s "$project_dir/backend" -p test_engine.py -v
 [[ -s "$project_dir/frontend/dist/index.html" ]]
 install -d -m 0755 "$site_root/releases" "$api_root/releases"
 install -d -m 0700 "$backup_dir"
@@ -101,7 +107,7 @@ fi
 printf '%s\n' "$previous_backend" > "$backup_dir/previous-backend"
 install -d -m 0755 "$backend_release"
 install -m 0644 "$project_dir/backend/main.py" "$project_dir/backend/security.py" "$project_dir/backend/requirements.txt" "$backend_release/"
-install -m 0644 "$project_dir/unison/evolution.uc" "$backend_release/evolution.uc"
+install -m 0644 "$engine_build_dir/evolution.uc" "$backend_release/evolution.uc"
 printf 'APP_REVISION=%s\n' "$revision" > "$backend_release/runtime.env"
 chmod 0644 "$backend_release/runtime.env"
 sha256sum "$backend_release/evolution.uc" > "$backend_release/engine.sha256"

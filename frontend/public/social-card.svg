@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+<defs><pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1" fill="#dbe2d3"/></pattern></defs>
+<rect width="1200" height="630" fill="#f8faf5"/><rect x="650" width="550" height="630" fill="url(#dots)"/>
+<g font-family="Arial,Helvetica,sans-serif" fill="#24372c">
+<rect x="64" y="58" width="49" height="49" rx="13" fill="#dceacb"/>
+<g fill="none" stroke="#30513b" stroke-width="2.3" stroke-linejoin="round"><path d="M88 80v10M76 95v-5h24v5"/><rect x="83" y="69" width="10" height="11" rx="1"/><rect x="71" y="95" width="10" height="8" rx="1"/><rect x="95" y="95" width="10" height="8" rx="1"/></g>
+<text x="126" y="83" font-size="25" font-weight="700">idea<tspan font-weight="400">evolution</tspan></text><text x="128" y="103" font-size="8" letter-spacing="2.8" fill="#657369">THE POSSIBILITY LAB</text>
+<text x="68" y="208" font-size="12" letter-spacing="3" fill="#71875d">ONE THOUGHT. MANY DIRECTIONS.</text>
+<text x="64" y="287" font-size="61" letter-spacing="-2">Every idea has</text><text x="64" y="359" font-size="61" letter-spacing="-2">a next chapter<tspan fill="#759653">.</tspan></text>
+<text x="68" y="413" font-size="19" fill="#657369">Plant a thought. Explore its branches.</text><text x="68" y="444" font-size="19" fill="#657369">See what grows.</text>
+<rect x="68" y="499" width="182" height="46" rx="8" fill="#2c543c"/><text x="91" y="528" font-size="15" fill="white">unison.micutu.com</text>
+<g stroke="#b2c29f" stroke-width="2" fill="none"><path d="M935 226v63M764 351v-62h288v62M764 447v-31M1052 447v-31"/></g>
+<g><rect x="821" y="130" width="228" height="96" rx="13" fill="white" stroke="#d8e1cf"/><rect x="837" y="145" width="62" height="21" rx="4" fill="#edf3e4"/><text x="848" y="160" font-size="10" fill="#597142">Seed idea</text><text x="838" y="192" font-size="16">What if we could…</text></g>
+<g><rect x="679" y="351" width="175" height="65" rx="10" fill="white" stroke="#d8e1cf"/><text x="700" y="390" font-size="19" fill="#78618f">↗ Expand</text></g>
+<g><rect x="951" y="351" width="188" height="65" rx="10" fill="white" stroke="#d8e1cf"/><text x="971" y="390" font-size="19" fill="#956d3b">⇄ Rephrase</text></g>
+<g><rect x="679" y="447" width="175" height="65" rx="10" fill="white" stroke="#d8e1cf"/><text x="700" y="486" font-size="19" fill="#985c76">✳ Amplify</text></g>
+<g><rect x="951" y="447" width="188" height="65" rx="10" fill="white" stroke="#d8e1cf"/><text x="971" y="486" font-size="19" fill="#4a7c70">↙ Synthesize</text></g>
+<text x="837" y="581" font-size="12" letter-spacing="1.3" fill="#657369">POWERED BY UNISON</text></g></svg>

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /ws
+Disallow: /release.json
+
+Sitemap: https://unison.micutu.com/sitemap.xml

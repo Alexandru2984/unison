@@ -6,8 +6,8 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #24372c;
-  background: #f8f9f6;
+  color: var(--text);
+  background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -262,4 +262,20 @@ kbd {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+.landing-fallback {
+  max-width: 720px;
+  margin: 10vh auto;
+  padding: 25px;
+  font-size: 16px;
+  line-height: 1.8;
+}
+.landing-fallback h1 {
+  font-size: 42px;
+  line-height: 1.15;
+  letter-spacing: -1px;
+}
+.landing-fallback h2 {
+  font-size: 24px;
+  margin-top: 35px;
 }

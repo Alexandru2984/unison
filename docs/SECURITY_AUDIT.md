@@ -18,6 +18,8 @@ Date: 2026-11-17. Scope: this repository and this application's effective Nginx/
 | UX-01 | High product impact | No mobile breakpoint, long content overlaps fixed graph layout, no visible request errors, no polling/reconnect, and a write relies on a WebSocket event to become visible. | 4 |
 | UX-02 | Medium product impact | Selecting a node rebuilds the fetch callback, reconnects the socket and refetches the board; a global Dagre instance retains stale graph state. No search, pagination, detail or export. | 4 |
 | OPS-01 | Medium | Actual frontend is an older immutable release; building `frontend/dist` alone will not update the public site. Repository port (8088) and local/active port (8097) disagree. | 5 |
+| ENGINE-01 | High product impact | Executing the live `.uc` with synthetic input returned an older plain-text transformation, while checked-in source described the richer JSON-producing engine. No build/provenance gate ensured executable/source agreement. | 3, 5 |
+| DEP-01 | Medium/High advisories | Registry audits reported OpenTelemetry `CVE-2026-126360` and 10 frontend package reports (9 moderate, 1 high, including transitive reports for the same underlying advisories). These are dependency findings, not proof that every advisory is exploitable through this app. | Patched |
 
 No SQL injection or shell command injection was identified in the reviewed routes: SQL values are parameterized and subprocesses use an argument vector. This is a scoped finding, not a guarantee that no vulnerability exists.
 
@@ -39,7 +41,7 @@ No SQL injection or shell command injection was identified in the reviewed route
 
 ### Blast radius
 
-All public ideas can be read without authentication. At audit time the live database had 14 records; account/user counts and annual loss estimates are unknown. Do not invent financial estimates. The dedicated service's state database is writable; the source checkout is read-only inside the service. A deployment as the developer account would expose much more of the VPS.
+All public ideas can be read without authentication. At audit time the live database had 14 records; account/user counts and annual loss estimates are unknown. Do not invent financial estimates. The dedicated service's state database is writable; the source checkout is read-only inside the service, and the new API release is root-owned. The sandbox allows loopback networking, so a compromised process could also attempt to reach other local services; their authentication is outside this application's review. A deployment as the developer account would expose much more of the VPS.
 
 ### Detection
 
@@ -63,3 +65,11 @@ Personal data may be submitted voluntarily as public text. Avoid secrets and per
 - [Nginx proxy timeouts and forwarded headers](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)
 - [Nginx response header inheritance](https://nginx.org/en/docs/http/ngx_http_headers_module.html)
 - [Unison executable compilation](https://www.unison-lang.org/docs/usage-topics/running-programs/)
+
+## Remediation verification
+
+The release adds strict origin/host/content/body validation, per-client rate limits with bounded limiter memory, a four-socket per-client / 48-socket application cap, two bounded mutation slots, cancellation-safe process-group cleanup, output limits and strict JSON parsing. Parent integrity, depth, capacity and idempotent writes are enforced before persistence. Slow socket sends run concurrently with deadlines. SQLite migrations are additive and indexed; unknown historical timestamps remain unknown.
+
+Deployment now uses a dedicated account, root-owned API releases with matching compiled engines, an online verified backup, a disposable full-stack candidate, atomic release switches and automatic rollback attempts. The effective hardened Nginx/systemd configuration is versioned; only this vhost is changed. Security headers are retained in the 429/asset locations. GitHub Actions has minimal permissions, immutable action pins and no production secrets or deploy job.
+
+`pip-audit` and `npm audit` returned no known advisories after updates. A limited full-history scan for AWS access-key prefixes, GitHub tokens and private-key PEM markers found no matches; this is not an exhaustive secret-detector result. The final release report records exact check results and production verification. Remaining requirements before promotion: moderation, explicit retention/ownership decisions, active alerts and scheduled off-host backups.
