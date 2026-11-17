@@ -1,4 +1,5 @@
 const paths = {
+  flag: "M5 21V3m0 1c4-3 8 3 14 0v10c-6 3-10-3-14 0",
   search: "m21 21-4.5-4.5 M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
   plus: "M12 5v14M5 12h14",
   graph: "M12 8v5M5 17v-4h14v4M9 3h6v5H9zM2 17h6v5H2zM16 17h6v5h-6z",

@@ -234,3 +234,146 @@ test("loads older pages without losing newer results", async ({ page }) => {
     page.getByRole("button", { name: "Load older ideas" }),
   ).toHaveCount(0);
 });
+
+test("reports privately with an accessible mobile dialog", async ({ page }) => {
+  const board = await mockBoard(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#idea-2");
+  await page.getByRole("button", { name: "Report this idea" }).click();
+  const modal = page.getByRole("dialog", { name: "Report idea #2" });
+  await expect(modal).toBeVisible();
+  await expect(
+    modal.getByRole("button", { name: "Send report" }),
+  ).toBeDisabled();
+  await modal
+    .getByRole("radio", { name: "Personal or confidential information" })
+    .check();
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  await modal.getByRole("button", { name: "Send report" }).click();
+  await expect(page.getByRole("dialog")).toContainText("Report received.");
+  expect(board.reports).toEqual([{ ideaId: 2, reason: "privacy" }]);
+  expect(board.ideas).toHaveLength(3);
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".inspector .selected-content")).toHaveText(
+    fixtures[1].content,
+  );
+});
+
+test("moderation removes live cached text, bookmarks, comparisons and export results", async ({
+  page,
+}) => {
+  const board = await mockBoard(page);
+  await page.goto("/#idea-2");
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await page
+    .locator(".inspector")
+    .getByRole("button", { name: "Save", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Compare to parent", exact: true })
+    .click();
+  await expect(page.locator(".comparison")).toBeVisible();
+  await expect(page.locator(".connection.live")).toBeVisible();
+  board.moderate(1);
+  await expect(page.locator(".idea-list-card")).toHaveCount(1);
+  await expect(page.locator(".comparison")).toHaveCount(0);
+  await expect(page.locator(".inspector")).toContainText(
+    "This idea is out of reach.",
+  );
+  await expect(
+    page.getByText(fixtures[0].content, { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(fixtures[1].content, { exact: true }),
+  ).toHaveCount(0);
+  await page.getByLabel("Export loaded ideas").click();
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Download JSON", exact: true })
+    .click();
+  const result = JSON.parse(
+    await readFile((await (await download).path())!, "utf8"),
+  );
+  expect(result.ideas.map((i: { id: number }) => i.id)).toEqual([3]);
+  await page.getByLabel("Export loaded ideas").click();
+  await page.getByRole("button", { name: /Saved on this device/ }).click();
+  await expect(page.locator(".idea-list-card")).toHaveCount(0);
+  board.restore();
+  await expect(page.locator(".idea-list-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await expect(page.locator(".inspector .selected-content")).toHaveText(
+    fixtures[1].content,
+  );
+});
+
+test("polling revision changes purge cached text when live notification is unavailable", async ({
+  page,
+}) => {
+  const board = await mockBoard(page);
+  await page.goto("/#idea-2");
+  await expect(page.locator(".inspector .selected-content")).toHaveText(
+    fixtures[1].content,
+  );
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  board.moderate(1, false);
+  // Visibility refresh uses the same HTTP revision check as the periodic fallback.
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect(page.locator(".idea-list-card")).toHaveCount(1);
+  await expect(page.locator(".inspector .selected-content")).toHaveCount(0);
+  await expect(page.locator(".inspector")).toContainText(
+    "This idea is out of reach.",
+  );
+});
+
+test("report failure stays visible and permits retry", async ({ page }) => {
+  await mockBoard(page);
+  await page.goto("/#idea-2");
+  await page.route("**/api/idea/2/report", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Reporting is temporarily unavailable." }),
+    }),
+  );
+  await page.getByRole("button", { name: "Report this idea" }).click();
+  await page.getByRole("radio", { name: "Spam or advertising" }).check();
+  await page.getByRole("button", { name: "Send report" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Reporting is temporarily unavailable.",
+  );
+  await expect(
+    page.getByRole("radio", { name: "Spam or advertising" }),
+  ).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("a delayed write response cannot repopulate a moderated branch", async ({
+  page,
+}) => {
+  const board = await mockBoard(page);
+  await page.goto("/#idea-2");
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  const release = board.pauseWrite();
+  await page.locator(".transform-button.expand").click();
+  await expect.poll(() => board.ideas.length).toBe(4);
+  board.moderate(1);
+  await expect(page.locator(".idea-list-card")).toHaveCount(1);
+  release();
+  await expect(page.locator(".inspector")).toContainText(
+    "This idea is out of reach.",
+  );
+  await expect(
+    page.getByText(
+      "A reproducible fixture result with a different perspective.",
+      { exact: true },
+    ),
+  ).toHaveCount(0);
+  await expect(page.locator(".idea-list-card")).toHaveCount(1);
+});

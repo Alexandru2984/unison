@@ -2141,3 +2141,65 @@
 :root[data-theme="dark"] .error-text {
   color: #e2a08b;
 }
+.report-link {
+  margin: -10px 0 22px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.report-dialog fieldset {
+  border: 0;
+  padding: 0;
+  margin: 20px 0 10px;
+}
+.report-dialog legend {
+  font-size: 12px;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+.report-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.report-option:has(input:checked) {
+  border-color: #73955e;
+  background: var(--surface-soft);
+}
+.report-option input {
+  accent-color: #3a6b49;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  flex-shrink: 0;
+}
+.report-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 21px;
+}
+.report-dialog .privacy-note {
+  font-size: 11px;
+  margin: 16px 0;
+  line-height: 1.7;
+}
+@media (max-width: 719px) {
+  .report-option {
+    min-height: 48px;
+    font-size: 13px;
+  }
+  .report-dialog .report-actions .button {
+    min-height: 43px;
+  }
+  .report-link {
+    font-size: 12px;
+    min-height: 40px;
+  }
+}

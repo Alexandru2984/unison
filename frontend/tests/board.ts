@@ -1,4 +1,4 @@
-import { type Page } from "@playwright/test";
+import { type Page, type WebSocketRoute } from "@playwright/test";
 import type { Idea } from "../src/lib/ideas";
 
 export const fixtures: Idea[] = [
@@ -37,10 +37,16 @@ export async function mockBoard(page: Page, initial = fixtures) {
   const ideas = structuredClone(initial),
     writes: { body: unknown; key: string }[] = [];
   const requests = new Map<string, Idea>();
+  const hidden = new Set<number>(),
+    peers: WebSocketRoute[] = [],
+    reports: { ideaId: number; reason: string }[] = [];
+  let boardRevision = 0;
+  let pausedWrite: Promise<void> | null = null;
   let sockets = 0,
     failNextWrite = false;
-  await page.routeWebSocket("**/ws", () => {
+  await page.routeWebSocket("**/ws", (peer) => {
     sockets++;
+    peers.push(peer);
   });
   await page.route("**/api/**", async (route) => {
     const request = route.request(),
@@ -59,8 +65,10 @@ export async function mockBoard(page: Page, initial = fixtures) {
       });
     if (path === "/api/stats")
       return reply({
-        total: ideas.length,
-        seeds: ideas.filter((i) => i.parent_id === null).length,
+        board_revision: boardRevision,
+        total: ideas.filter((i) => !hidden.has(i.id)).length,
+        seeds: ideas.filter((i) => i.parent_id === null && !hidden.has(i.id))
+          .length,
         max_depth: Math.max(0, ...ideas.map((i) => i.depth)),
         capacity: 10000,
         max_branch_depth: 32,
@@ -70,7 +78,7 @@ export async function mockBoard(page: Page, initial = fixtures) {
       const result: Idea[] = [];
       let id: number | null = Number(lineage[1]);
       while (id !== null) {
-        const item = ideas.find((i) => i.id === id);
+        const item = ideas.find((i) => i.id === id && !hidden.has(i.id));
         if (!item) break;
         result.unshift(item);
         id = item.parent_id;
@@ -78,6 +86,14 @@ export async function mockBoard(page: Page, initial = fixtures) {
       return result.length
         ? reply(result)
         : reply({ detail: "Idea not found" }, 404);
+    }
+    const report = path.match(/^\/api\/idea\/(\d+)\/report$/);
+    if (report && request.method() === "POST") {
+      reports.push({
+        ideaId: Number(report[1]),
+        reason: request.postDataJSON().reason,
+      });
+      return reply({ status: "received" }, 202);
     }
     if (path !== "/api/idea") return reply({ detail: "Not found" }, 404);
     if (request.method() === "POST") {
@@ -108,11 +124,15 @@ export async function mockBoard(page: Page, initial = fixtures) {
       };
       ideas.push(idea);
       requests.set(key, idea);
+      const wait = pausedWrite;
+      pausedWrite = null;
+      if (wait) await wait;
       return reply(idea, 201);
     }
     const params = url.searchParams;
     let rows = ideas.filter(
       (i) =>
+        !hidden.has(i.id) &&
         (!params.get("q") ||
           i.content.toLowerCase().includes(params.get("q")!.toLowerCase())) &&
         (!params.get("mutation") || i.mutation === params.get("mutation")) &&
@@ -134,14 +154,47 @@ export async function mockBoard(page: Page, initial = fixtures) {
     return reply(
       rows.sort((a, b) => a.id - b.id),
       200,
-      { "X-Has-More": String(hasMore), "X-Next-Cursor": String(cursor ?? "") },
+      {
+        "X-Has-More": String(hasMore),
+        "X-Next-Cursor": String(cursor ?? ""),
+        "X-Board-Revision": String(boardRevision),
+      },
     );
   });
   return {
     ideas,
     writes,
+    reports,
+    moderate(id: number, notify = true) {
+      hidden.add(id);
+      for (let step = 0; step < 32; step++)
+        for (const idea of ideas)
+          if (idea.parent_id !== null && hidden.has(idea.parent_id))
+            hidden.add(idea.id);
+      boardRevision++;
+      if (notify)
+        for (const peer of peers)
+          peer.send(
+            JSON.stringify({ event: "board_changed", revision: boardRevision }),
+          );
+    },
+    restore() {
+      hidden.clear();
+      boardRevision++;
+      for (const peer of peers)
+        peer.send(
+          JSON.stringify({ event: "board_changed", revision: boardRevision }),
+        );
+    },
     get sockets() {
       return sockets;
+    },
+    pauseWrite() {
+      let release!: () => void;
+      pausedWrite = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => release();
     },
     failWrite() {
       failNextWrite = true;

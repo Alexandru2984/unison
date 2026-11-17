@@ -9,6 +9,7 @@ import {
   type FormEvent,
 } from "react";
 import Icon from "./components/Icon";
+import ReportDialog from "./components/ReportDialog";
 import {
   apiError,
   download,
@@ -91,11 +92,15 @@ export default function App() {
   const [horizontal, setHorizontal] = useState(false),
     [focusPath, setFocusPath] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(hashId);
-  const [selectedSnapshot, setSelectedSnapshot] = useState<Idea | null>(null);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<{
+    idea: Idea;
+    epoch: number;
+  } | null>(null);
   const [lineageState, setLineageState] = useState<{
     id: number | null;
     ideas: Idea[];
-  }>({ id: null, ideas: [] });
+    epoch: number;
+  }>({ id: null, ideas: [], epoch: 0 });
   const [lineageError, setLineageError] = useState("");
   const [submitting, setSubmitting] = useState<Mutation | null>(null),
     [error, setError] = useState(""),
@@ -103,6 +108,7 @@ export default function App() {
   const [branchDraft, setBranchDraft] = useState(false),
     [inspectorTab, setInspectorTab] = useState<"detail" | "compare">("detail");
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [reportTarget, setReportTarget] = useState<number | null>(null);
   const [storageAvailable] = useState(() => {
     try {
       const key = "idea-evolution:storage-check";
@@ -126,13 +132,20 @@ export default function App() {
     bookmarks,
   });
   const lineage = useMemo(
-    () => (lineageState.id === selectedId ? lineageState.ideas : []),
-    [lineageState, selectedId],
+    () =>
+      lineageState.id === selectedId &&
+      lineageState.epoch === board.contentEpoch
+        ? lineageState.ideas
+        : [],
+    [lineageState, selectedId, board.contentEpoch],
   );
   const selected =
     board.ideas.find((i) => i.id === selectedId) ??
     lineage.find((i) => i.id === selectedId) ??
-    (selectedSnapshot?.id === selectedId ? selectedSnapshot : null);
+    (selectedSnapshot?.idea.id === selectedId &&
+    selectedSnapshot.epoch === board.contentEpoch
+      ? selectedSnapshot.idea
+      : null);
   const parent = selected
     ? (lineage.find((i) => i.id === selected.parent_id) ??
       board.ideas.find((i) => i.id === selected.parent_id))
@@ -178,7 +191,11 @@ export default function App() {
         if (!Array.isArray(data) || !data.every(isIdea))
           throw new Error("The idea could not be read.");
         if (!controller.signal.aborted) {
-          setLineageState({ id: selectedId, ideas: data });
+          setLineageState({
+            id: selectedId,
+            ideas: data,
+            epoch: board.contentEpoch,
+          });
           setLineageError("");
         }
       })
@@ -191,25 +208,28 @@ export default function App() {
           );
       });
     return () => controller.abort();
-  }, [selectedId]);
+  }, [selectedId, board.contentEpoch]);
 
-  const selectIdea = useCallback((idea: Idea) => {
-    setSelectedId(idea.id);
-    setSelectedSnapshot(idea);
-    setLineageError("");
-    setBranchDraft(false);
-    setInspectorTab("detail");
-    history.replaceState(null, "", `#idea-${idea.id}`);
-    if (innerWidth < 720)
-      requestAnimationFrame(() =>
-        document.querySelector(".inspector.has-selection")?.scrollIntoView({
-          behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
-            ? "instant"
-            : "smooth",
-          block: "start",
-        }),
-      );
-  }, []);
+  const selectIdea = useCallback(
+    (idea: Idea) => {
+      setSelectedId(idea.id);
+      setSelectedSnapshot({ idea, epoch: board.contentEpoch });
+      setLineageError("");
+      setBranchDraft(false);
+      setInspectorTab("detail");
+      history.replaceState(null, "", `#idea-${idea.id}`);
+      if (innerWidth < 720)
+        requestAnimationFrame(() =>
+          document.querySelector(".inspector.has-selection")?.scrollIntoView({
+            behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+              ? "instant"
+              : "smooth",
+            block: "start",
+          }),
+        );
+    },
+    [board.contentEpoch],
+  );
   const clearSelection = useCallback(() => {
     setSelectedId(null);
     setFocusPath(false);
@@ -1068,6 +1088,12 @@ export default function App() {
                   </div>
                 </>
               )}
+              <button
+                className="text-button report-link"
+                onClick={() => setReportTarget(selected.id)}
+              >
+                <Icon name="flag" size={14} /> Report this idea
+              </button>
               {lineageError && (
                 <p className="small error-text" role="alert">
                   {lineageError}
@@ -1273,6 +1299,12 @@ export default function App() {
           </div>
         )}
       </div>
+      {reportTarget !== null && (
+        <ReportDialog
+          ideaId={reportTarget}
+          onClose={() => setReportTarget(null)}
+        />
+      )}
       <dialog ref={help} className="help-dialog" aria-labelledby="help-title">
         <div className="inspector-heading">
           <span className="eyebrow">WELCOME TO THE POSSIBILITY LAB</span>
