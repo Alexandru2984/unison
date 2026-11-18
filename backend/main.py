@@ -24,6 +24,7 @@ from starlette.websockets import WebSocketDisconnect
 from security import ApiSecurityMiddleware, RateLimiter, WriteBudget, client_key
 from moderation import ReportReason, board_revision, init_moderation, now
 from text_policy import PolicyError, clean_engine_text, clean_user_text, content_key
+from social import WaterLedger, activity, add_water, discover_ids, init_social, utc_day, water_total
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=PROJECT_DIR / '.env', override=False)
@@ -58,6 +59,10 @@ GLOBAL_IDEAS_PER_HOUR = bounded_int('GLOBAL_IDEAS_PER_HOUR', 600, 1, 100_000)
 MODERATION_POLL_SECONDS = 1
 MUTATION_TIMEOUT_SECONDS = bounded_int('MUTATION_TIMEOUT_SECONDS', 5, 1, 30)
 IDEA_FIELDS = 'id, parent_id, content, mutation, created_at, root_id, depth'
+# Public rows carry live counts of visible branches and of reactions.
+PUBLIC_FIELDS = (IDEA_FIELDS + ', (SELECT COUNT(*) FROM ideas c WHERE c.parent_id = ideas.id AND c.hidden = 0) AS children'
+                 ', (SELECT COALESCE(SUM(w.count), 0) FROM idea_water w WHERE w.idea_id = ideas.id) AS water')
+PUBLIC_KEYS = [*IDEA_FIELDS.split(', '), 'children', 'water']
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 async def watch_moderation():
@@ -151,6 +156,7 @@ def init_db() -> None:
             conn.execute('UPDATE ideas SET content_key = ? WHERE id = ?', (content_key(row['content']), row['id']))
         conn.execute('CREATE INDEX IF NOT EXISTS ideas_content_key ON ideas(content_key, parent_id)')
         init_moderation(conn)
+        init_social(conn)
         conn.commit()
 
 
@@ -333,16 +339,16 @@ async def health():
 
 
 def public_idea(row):
-    return {key: row[key] for key in IDEA_FIELDS.split(', ')}
+    return {key: row[key] for key in PUBLIC_KEYS}
 
 
 def existing_duplicate(conn, parent_id, key=None, mutation=None):
     """A visible equivalent idea, None, or 409 when moderation removed that exact text."""
     if mutation is not None:
-        row = conn.execute(f'SELECT {IDEA_FIELDS}, hidden FROM ideas WHERE parent_id = ? AND mutation = ? '
+        row = conn.execute(f'SELECT {PUBLIC_FIELDS}, hidden FROM ideas WHERE parent_id = ? AND mutation = ? '
                            'ORDER BY hidden, id LIMIT 1', (parent_id, mutation)).fetchone()
     else:
-        row = conn.execute(f'SELECT {IDEA_FIELDS}, hidden FROM ideas WHERE content_key = ? AND parent_id IS ? '
+        row = conn.execute(f'SELECT {PUBLIC_FIELDS}, hidden FROM ideas WHERE content_key = ? AND parent_id IS ? '
                            'ORDER BY hidden, id LIMIT 1', (key, parent_id)).fetchone()
     if row is None:
         return None
@@ -362,7 +368,7 @@ async def create_idea(req: IdeaRequest, request: Request, response: Response,
     def replay(conn):
         if idempotency_key is None:
             return None
-        row = conn.execute(f'SELECT {IDEA_FIELDS}, request_hash, hidden FROM ideas WHERE request_key = ?', (idempotency_key,)).fetchone()
+        row = conn.execute(f'SELECT {PUBLIC_FIELDS}, request_hash, hidden FROM ideas WHERE request_key = ?', (idempotency_key,)).fetchone()
         if row is None:
             return None
         if row['hidden']:
@@ -432,7 +438,7 @@ async def create_idea(req: IdeaRequest, request: Request, response: Response,
             idea_id = cursor.lastrowid
             if parent is None:
                 conn.execute('UPDATE ideas SET root_id = ? WHERE id = ?', (idea_id, idea_id))
-            idea = dict(conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ?', (idea_id,)).fetchone())
+            idea = dict(conn.execute(f'SELECT {PUBLIC_FIELDS} FROM ideas WHERE id = ?', (idea_id,)).fetchone())
             conn.commit()
             write_budget.consume(client)
     await broadcast_idea({'event': 'ideas_changed'})
@@ -443,13 +449,15 @@ async def create_idea(req: IdeaRequest, request: Request, response: Response,
 async def get_ideas(response: Response, before: int | None = Query(default=None, gt=0, le=MAX_SQLITE_ID),
                     after: int | None = Query(default=None, ge=0, le=MAX_SQLITE_ID), limit: int = Query(default=200, ge=1, le=500),
                     q: str = Query(default='', max_length=200), root_id: int | None = Query(default=None, gt=0, le=MAX_SQLITE_ID),
-                    mutation: Mutation | None = None, roots_only: bool = False,
+                    mutation: Mutation | None = None, roots_only: bool = False, leaves_only: bool = False,
                     ids: str | None = Query(default=None, max_length=700)):
     if before is not None and after is not None:
         raise HTTPException(status_code=422, detail='Use either before or after')
     clauses, values = ['hidden=0'], []
     if roots_only:
         clauses.append('parent_id IS NULL')
+    if leaves_only:
+        clauses.append('NOT EXISTS (SELECT 1 FROM ideas c WHERE c.parent_id = ideas.id AND c.hidden = 0)')
     if ids is not None:
         parts = ids.split(',')
         if len(parts) > 100 or any(not re.fullmatch(r'[1-9][0-9]{0,9}', part) for part in parts):
@@ -469,7 +477,7 @@ async def get_ideas(response: Response, before: int | None = Query(default=None,
     with closing(connect_db()) as conn:
         conn.execute('BEGIN')
         response.headers['X-Board-Revision'] = str(board_revision(conn))
-        rows = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas{where} ORDER BY id {order} LIMIT ?', (*values, page_size + 1)).fetchall()
+        rows = conn.execute(f'SELECT {PUBLIC_FIELDS} FROM ideas{where} ORDER BY id {order} LIMIT ?', (*values, page_size + 1)).fetchall()
     response.headers['X-Has-More'] = str(len(rows) > page_size).lower()
     rows = rows[:page_size]
     if rows:
@@ -482,7 +490,7 @@ async def get_ideas(response: Response, before: int | None = Query(default=None,
 @app.get('/api/idea/{idea_id}')
 async def get_idea(idea_id: IdeaId):
     with closing(connect_db()) as conn:
-        row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
+        row = conn.execute(f'SELECT {PUBLIC_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail='Idea not found')
     return dict(row)
@@ -495,7 +503,7 @@ async def get_lineage(idea_id: IdeaId):
         conn.execute('BEGIN')
         while idea_id is not None and idea_id not in seen and len(lineage) <= MAX_DEPTH:
             seen.add(idea_id)
-            row = conn.execute(f'SELECT {IDEA_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
+            row = conn.execute(f'SELECT {PUBLIC_FIELDS} FROM ideas WHERE id = ? AND hidden=0', (idea_id,)).fetchone()
             if row is None:
                 if not lineage:
                     raise HTTPException(status_code=404, detail='Idea not found')
@@ -513,6 +521,9 @@ async def get_stats():
             COALESCE(MAX(depth), 0) AS max_depth, MAX(id) AS latest_id FROM ideas WHERE hidden=0''').fetchone())
         summary['board_revision'] = board_revision(conn)
         summary['mutations'] = {row['mutation']: row['count'] for row in conn.execute('SELECT mutation, COUNT(*) AS count FROM ideas WHERE hidden=0 GROUP BY mutation')}
+        summary['water'] = conn.execute('SELECT COALESCE(SUM(w.count), 0) FROM idea_water w JOIN ideas i ON i.id = w.idea_id '
+                                        'WHERE i.hidden = 0').fetchone()[0]
+        summary['activity'] = activity(conn)
     summary['capacity'] = MAX_IDEAS
     summary['max_branch_depth'] = MAX_DEPTH
     return summary
@@ -538,6 +549,54 @@ async def report_idea(idea_id: IdeaId, req: ReportRequest):
     # Do not expose report IDs, counts or previous reports. Reports never hide
     # content automatically, and no IP, browser identifier or free text is stored.
     return {'status': 'received'}
+
+
+water_ledger = WaterLedger()
+
+
+@app.post('/api/idea/{idea_id}/water')
+async def water_idea(idea_id: IdeaId, request: Request):
+    """Anonymous appreciation: one counted reaction per connection, idea and UTC day."""
+    client = client_key(request.client.host if request.client else None)
+    day = utc_day()
+    with closing(connect_db()) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if conn.execute('SELECT 1 FROM ideas WHERE id = ? AND hidden = 0', (idea_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail='Idea not found')
+        counted = water_ledger.first_today(client, idea_id, day)
+        if counted:
+            add_water(conn, idea_id, day)
+        total = water_total(conn, idea_id)
+        conn.commit()
+    if counted:
+        await broadcast_idea({'event': 'water', 'id': idea_id, 'water': total})
+    return {'idea_id': idea_id, 'water': total, 'counted': counted}
+
+
+def public_rows_by_id(conn, ids):
+    if not ids:
+        return {}
+    rows = conn.execute(f"SELECT {PUBLIC_FIELDS} FROM ideas WHERE hidden = 0 AND id IN ({','.join('?' for _ in ids)})", ids)
+    return {row['id']: dict(row) for row in rows}
+
+
+@app.get('/api/discover')
+async def discover(response: Response):
+    with closing(connect_db()) as conn:
+        conn.execute('BEGIN')
+        response.headers['X-Board-Revision'] = str(board_revision(conn))
+        sections = discover_ids(conn, MAX_DEPTH)
+        rows = public_rows_by_id(conn, sorted({idea_id for ids in sections.values() for idea_id in ids}))
+    return {name: [rows[idea_id] for idea_id in ids if idea_id in rows] for name, ids in sections.items()}
+
+
+@app.get('/api/random')
+async def random_idea():
+    with closing(connect_db()) as conn:
+        row = conn.execute(f'SELECT {PUBLIC_FIELDS} FROM ideas WHERE hidden = 0 ORDER BY RANDOM() LIMIT 1').fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail='The garden is empty')
+    return dict(row)
 
 
 @app.get('/api/mutations')

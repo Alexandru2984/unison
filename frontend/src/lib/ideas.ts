@@ -18,6 +18,9 @@ export interface Idea {
   created_at: string | null;
   root_id: number;
   depth: number;
+  /** Visible branches and reactions; absent from older servers. */
+  children?: number;
+  water?: number;
 }
 export interface Stats {
   total: number;

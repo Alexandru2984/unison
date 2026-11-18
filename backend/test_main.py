@@ -24,6 +24,13 @@ import main
 from security import RateLimiter
 
 
+def core(value):
+    """Strip live counters (branches, reactions) that change after a snapshot."""
+    if isinstance(value, list):
+        return [core(item) for item in value]
+    return {key: item for key, item in value.items() if key not in ('children', 'water')}
+
+
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -85,7 +92,7 @@ class ApiTests(unittest.TestCase):
         root = self.create()
         child = self.create('A hand-written variation', parent_id=root['id'])
         self.assertEqual((child['root_id'], child['depth']), (root['id'], 1))
-        self.assertEqual(self.client.get(f"/api/idea/{child['id']}/lineage").json(), [root, child])
+        self.assertEqual(core(self.client.get(f"/api/idea/{child['id']}/lineage").json()), core([root, child]))
 
     def test_mutation_uses_stored_parent(self):
         root = self.create()
@@ -140,7 +147,7 @@ class ApiTests(unittest.TestCase):
     def test_saved_ids_and_seed_filters_are_bounded(self):
         seed = self.create('seed')
         child = self.create('custom branch', parent_id=seed['id'])
-        self.assertEqual(self.client.get('/api/idea?roots_only=true').json(), [seed])
+        self.assertEqual(core(self.client.get('/api/idea?roots_only=true').json()), core([seed]))
         self.assertEqual(self.client.get('/api/idea', params={'ids': str(child['id'])}).json(), [child])
         for ids in ['0', '1,2,not-a-number', ','.join(['1'] * 101), '1) OR 1=1 --']:
             self.assertEqual(self.client.get('/api/idea', params={'ids': ids}).status_code, 422)

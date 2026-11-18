@@ -132,7 +132,7 @@ class ModerationTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/idea').json(), [root])
         self.assertFalse(self.rule(root['id'], 'restore')['changed'])
         self.rule(child['id'], 'restore')
-        self.assertEqual(self.client.get('/api/idea').json(), [root, child, grandchild])
+        self.assertEqual(test_main.core(self.client.get('/api/idea').json()), test_main.core([root, child, grandchild]))
         with closing(main.connect_db()) as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM moderation_audit').fetchone()[0], 4)
 

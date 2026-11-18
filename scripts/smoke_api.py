@@ -44,6 +44,14 @@ for rejected in [{'content': 'visit www.spam.example'}, {'content': 'x\u202ey'}]
     else:
         raise AssertionError('Text policy accepted an invalid idea')
 TOTAL = 1 + len(MUTATIONS)
+assert request(f"/api/idea/{seed['id']}/water", {})['counted'] is True
+assert request(f"/api/idea/{seed['id']}/water", {}) == {'idea_id': seed['id'], 'water': 1, 'counted': False}
+sections = request('/api/discover')
+assert sections['branching'][0]['id'] == seed['id'] and sections['branching'][0]['children'] == len(MUTATIONS)
+assert sections['trending'][0]['id'] == seed['id'] and sections['trending'][0]['water'] == 1
+assert len(request('/api/idea?leaves_only=true')) == len(MUTATIONS)
+assert request('/api/random')['root_id'] == seed['id']
+assert request('/api/stats')['water'] == 1
 try:
     request('/api/idea', {'content': 'orphan', 'parent_id': 999})
 except HTTPError as error:
@@ -68,6 +76,7 @@ assert len(moderate('queue')) == 1
 assert moderate('hide', str(seed['id']), '--reason', 'privacy')['affected'] == TOTAL
 assert request('/api/idea') == []
 assert request('/api/stats')['total'] == 0
+assert all(rows == [] for rows in request('/api/discover').values())
 for path in [f"/api/idea/{seed['id']}", f"/api/idea/{result['id']}/lineage"]:
     try:
         request(path)
