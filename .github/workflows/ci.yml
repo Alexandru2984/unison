@@ -26,6 +26,8 @@ jobs:
           cache-dependency-path: backend/requirements*
       - run: python -m pip install -r backend/requirements-dev.txt
       - run: python -m unittest discover -s backend -v
+      # The off-host backup tests drive a real rclone crypt remote on local disk.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rclone
       - run: python -m unittest discover -s scripts -v
       # deploy.sh builds the production virtualenv from these exact wheels.
       - name: Verify the hash-locked runtime installs from wheels

@@ -225,10 +225,27 @@ PY
 armed=0
 
 # Post-release housekeeping: failures are reported but never undo a verified release.
-if ! { install -m 0644 "$project_dir/infra/systemd/unison-backup.service" /etc/systemd/system/unison-backup.service \
-    && install -m 0644 "$project_dir/infra/systemd/unison-backup.timer" /etc/systemd/system/unison-backup.timer \
-    && systemctl daemon-reload && systemctl enable --now unison-backup.timer; }; then
-  echo 'Daily backup timer was not enabled; inspect unison-backup.timer.' >&2
+# Failed backups use this VPS's operator alert channel when it provides one.
+alert_template=/etc/systemd/system/swift-vapor-alert@.service
+install_backup_units() {
+  local unit
+  install -m 0644 "$project_dir/infra/systemd/unison-backup.service" "$project_dir/infra/systemd/unison-backup.timer" \
+    "$project_dir/infra/systemd/unison-offsite.service" /etc/systemd/system/ || return 1
+  for unit in unison-backup unison-offsite; do
+    if [[ -f "$alert_template" ]]; then
+      install -d -m 0755 "/etc/systemd/system/$unit.service.d" || return 1
+      install -m 0644 "$project_dir/infra/systemd/alert.conf" "/etc/systemd/system/$unit.service.d/alert.conf" || return 1
+    else
+      rm -f "/etc/systemd/system/$unit.service.d/alert.conf"
+    fi
+  done
+  systemctl daemon-reload && systemctl enable --now unison-backup.timer
+}
+if ! install_backup_units; then
+  echo 'Backup units were not fully installed; inspect unison-backup.timer and unison-offsite.service.' >&2
+fi
+if [[ ! -f /etc/unison-backend/offsite-rclone.conf ]]; then
+  echo 'Off-host backup copies are not configured yet; see docs/OPERATIONS.md.' >&2
 fi
 python3 "$project_dir/scripts/prune_releases.py" --apply --protect "$previous_backend" --protect "$previous_frontend" --protect "$backup_dir" > "$backup_dir/prune.json" \
   || echo 'Release pruning failed; the deployment itself succeeded.' >&2

@@ -1,0 +1,59 @@
+[Unit]
+Description=Verified encrypted off-host copy of the Idea Evolution backups
+# Started by unison-backup.service after each verified snapshot. It is skipped
+# until the operator provisions the rclone credential (see docs/OPERATIONS.md).
+ConditionPathExists=/opt/unison-backend/current/offsite.py
+ConditionPathExists=/etc/unison-backend/offsite-rclone.conf
+Wants=network-online.target
+After=network-online.target unison-backup.service
+
+[Service]
+Type=oneshot
+# A transient account that can read the snapshots (group unisonapp, for this
+# process only) and its own credential copy, and nothing of the live service.
+DynamicUser=yes
+SupplementaryGroups=unisonapp
+LoadCredential=rclone.conf:/etc/unison-backend/offsite-rclone.conf
+StateDirectory=unison-offsite
+StateDirectoryMode=0700
+# Disk-backed scratch: snapshots never fill the host's shared /run tmpfs.
+CacheDirectory=unison-offsite
+CacheDirectoryMode=0700
+UMask=0077
+Environment=GOMAXPROCS=2
+ExecStart=/usr/bin/python3 -I /opt/unison-backend/current/offsite.py upload --source /var/lib/unison-backups --remote gdrive-vps-crypt:apps/unison.micutu.com
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/var/lib/unison-backend -/etc/unison-backend -/var/backups/unison-backend
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+LimitCORE=0
+TasksMax=64
+MemoryMax=512M

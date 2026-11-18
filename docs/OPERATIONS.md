@@ -29,11 +29,37 @@ Do not print `.env`, tunnel credentials, private keys or authentication headers 
 
 Use SQLite's online backup API while the service is live; copying just the `.db` file can miss transactions in the WAL. Store backups outside the checkout with mode 0600 and record the corresponding Git revision. Check `PRAGMA integrity_check` against the backup. Keep old frontend releases until the new release passes local and public checks.
 
-`unison-backup.timer` makes a daily snapshot as the service user. Each snapshot is verified with `PRAGMA integrity_check`, has mode 0600, and the newest 14 are kept in `/var/lib/unison-backups`. Check it with `systemctl list-timers unison-backup.timer` and `journalctl -u unison-backup`. To restore:
+`unison-backup.timer` makes a daily snapshot as the service user. Each snapshot is verified with `PRAGMA integrity_check` and the newest 14 are kept in `/var/lib/unison-backups`. Snapshots have mode 0640 in a 0750 directory: group `unisonapp` has no members, and only the off-host job joins it, for its own process. Check it with `systemctl list-timers unison-backup.timer` and `journalctl -u unison-backup`. To restore:
 1. Stop `unison-backend`.
 2. Copy the current database and its `-wal`/`-shm` files aside.
 3. Install the chosen snapshot as `/var/lib/unison-backend/evolution.db`, owned by `unisonapp` with mode 0600, and remove the stale `-wal`/`-shm` files.
 4. Start the service.
+
+### Off-host copies
+
+After every successful snapshot, `unison-backup.service` starts `unison-offsite.service` (`OnSuccess=`). The job runs as a transient `DynamicUser` with no capabilities. It receives the rclone credential through `LoadCredential=` and cannot see the live database, the deployment backups or `/etc/unison-backend`. It:
+1. Copies the newest snapshot, which must be at most 36 hours old, into private scratch space, checks it and compresses it deterministically.
+2. Uploads the archive and a SHA-256 manifest to `gdrive-vps-crypt:apps/unison.micutu.com`. That rclone crypt remote encrypts contents and names before they leave the VPS. An existing remote archive is never overwritten.
+3. Downloads both again, compares hashes, restores the database in scratch space and runs `PRAGMA integrity_check`. A remote copy that differs fails the job; delete that archive and its manifest manually once you understand why.
+4. Applies retention: the newest archive of each of the last 30 days and of each of the last 12 months. Only `evolution-<UTC stamp>.db.gz` archives and their manifests in that folder are ever deleted, and Google Drive moves deleted files to its trash.
+
+Check it with `journalctl -u unison-offsite` and `sudo cat /var/lib/unison-offsite/status.json`. When the host's `swift-vapor-alert@.service` template exists, deployment installs drop-ins so that a failure of either backup unit sends the host's operator alert.
+
+The credential is `/etc/unison-backend/offsite-rclone.conf` (root, 0600). It holds only the `gdrive` and `gdrive-vps-crypt` remotes, the same ones the other applications on this VPS use. The job skips itself while the file is absent. To provision or rotate it, copy those two sections from an authorised rclone configuration. The crypt passwords decrypt every archive: keep them in a password manager outside this VPS, because losing the server also loses this copy of them.
+
+To restore from Google Drive:
+
+```bash
+offsite() { sudo python3 -I /opt/unison-backend/current/offsite.py "$@" --remote gdrive-vps-crypt:apps/unison.micutu.com --config /etc/unison-backend/offsite-rclone.conf; }
+offsite list
+offsite fetch --output /root/evolution-restore.db   # newest; or --name evolution-<stamp>.db.gz
+```
+
+`fetch` verifies the manifest, decompresses with a size limit, checks integrity and refuses to overwrite. Install the resulting file with the restore steps above. On a new server, run the same script from the repository with `rclone` and the configuration file.
+
+Limits: root on this VPS can use the token to delete the Drive copies, which then stay in the Drive trash for 30 days. The token has full Drive scope and is shared with the other applications. Protecting against a compromised host requires a write-once (object-locked) destination.
+
+### Deployment backups and rollback
 
 Each private deployment backup records `previous-frontend`, `previous-backend` and the previous `service.unit`. To roll back:
 1. Atomically replace **both** `current` symlinks with the previous release paths.
@@ -59,4 +85,4 @@ Use `sudo python3 scripts/moderate.py queue` to inspect pending reports and [the
 
 ## Remaining operator work
 
-Connect health/error alerts to an owner-selected channel, copy the daily snapshots to an encrypted off-host destination, test restoration periodically, decide retention/moderation rules, and review Cloudflare origin rules. These cannot be considered complete merely because a script or log exists.
+Connect API health/error alerts to an owner-selected channel. The backup units already report failures through the host's alert template. Rehearse a full restore on a spare host occasionally; each off-host run restores only into scratch space. Decide retention and moderation rules, and review Cloudflare origin rules. These cannot be considered complete merely because a script or log exists.

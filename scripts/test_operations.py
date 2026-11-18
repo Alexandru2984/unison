@@ -187,7 +187,7 @@ class DailyBackupTests(unittest.TestCase):
             self.assertNotIn('evolution-20261101T031700Z.db', names)
             self.assertIn('keep-me.txt', names)
             newest = target / snapshots[-1]
-            self.assertEqual(os.stat(newest).st_mode & 0o777, 0o600)
+            self.assertEqual(os.stat(newest).st_mode & 0o777, 0o640)
             with closing(sqlite3.connect(newest)) as copy:
                 self.assertEqual(copy.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
 

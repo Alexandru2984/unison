@@ -2,15 +2,19 @@
 Description=Private daily backup of the Idea Evolution database
 ConditionPathExists=/opt/unison-backend/current/backup.py
 ConditionPathExists=/var/lib/unison-backend/evolution.db
+# Each verified snapshot is copied off the host; that unit skips itself until
+# its credential is provisioned.
+OnSuccess=unison-offsite.service
 
 [Service]
 Type=oneshot
 User=unisonapp
 Group=unisonapp
-UMask=0077
-# Snapshots live outside the service state directory and stay private.
+# Snapshots live outside the service state directory. Group read exists only for
+# unison-offsite.service, which joins this group while it runs.
+UMask=0027
 StateDirectory=unison-backups
-StateDirectoryMode=0700
+StateDirectoryMode=0750
 ReadWritePaths=/var/lib/unison-backend
 ExecStart=/usr/bin/python3 -I /opt/unison-backend/current/backup.py --db /var/lib/unison-backend/evolution.db --dir /var/lib/unison-backups --keep 14
 Nice=10

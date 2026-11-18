@@ -20,7 +20,9 @@ NAME = re.compile(r'^evolution-\d{8}T\d{6}Z\.db$')
 def snapshot(source: Path, destination: Path) -> None:
     partial = destination.with_name(f'.{destination.name}.partial')
     partial.unlink(missing_ok=True)
-    os.close(os.open(partial, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    # Group-readable so the off-host copy job (a member of this group only while it
+    # runs) can read it; the directory is closed to everyone else.
+    os.close(os.open(partial, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640))
     try:
         with closing(sqlite3.connect(source.resolve(strict=True).as_uri() + '?mode=ro', uri=True)) as src:
             with closing(sqlite3.connect(partial)) as dst:
@@ -50,7 +52,7 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
     if args.keep < 1:
         parser.error('--keep must be at least 1')
-    args.dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    args.dir.mkdir(mode=0o750, parents=True, exist_ok=True)
     destination = args.dir / f'evolution-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.db'
     if destination.exists():
         raise SystemExit(f'Refusing to overwrite {destination.name}')
