@@ -1,8 +1,47 @@
 # Product release verification
 
-Date: 2026-11-17. **Published:** https://unison.micutu.com/
+**Published:** https://unison.micutu.com/
 
-Deployed code revision: `206c6004a210178c23a2008a09a3fa8e4f6b978a`. A documentation-only verification commit follows deployment; `/api/health` and `/release.json` identify the running code.
+## v2 release (2026-11-18)
+
+Deployed code revision: `74863e70f8498eaa42565760415f78fd47f7d534`. This documentation commit follows the deployment; `/api/health` and `/release.json` identify the running code. Stages E1–E7 and the audit findings they fix are listed in [PLAN.md](PLAN.md#v2-iteration-2026-11-18) and [SECURITY_AUDIT.md](SECURITY_AUDIT.md#audit-2026-11-18-v2-iteration).
+
+Before deployment:
+- Backend: 69 tests, including the real compiled engine. Operations: 11 tests. Frontend: 14 unit and 25 Playwright tests, lint at zero warnings, production build.
+- The engine build is byte-identical to the previous scratch build. `pip-audit` on the hash lock is clean. Shipped npm dependencies have no advisories. Build tooling carries GHSA-fc5q-39xc-vjpf (picomatch ≤4.0.7, no patched release; build-time only).
+- Migration rehearsal on a private copy of production, made through the SQLite backup API and deleted afterwards:
+  - the 14 ideas kept a byte-identical fingerprint (IDs, parents, roots, depth, rule, text, hidden flag);
+  - only the `content_key` column and the `idea_water` table were added, and the key was backfilled for 14/14;
+  - all 14 share pages returned 200, the sitemap listed 15 URLs, the feed had 2 entries, and discovery and previews answered;
+  - the previous release passed `rollback_compatible.py` against the migrated copy.
+- `scripts/check_nginx.sh` passed, and `shellcheck` and `systemd-analyze verify` found no unit errors.
+
+Deployment (`sudo ./deploy.sh`, exit 0, no rollback):
+- Hash-locked virtualenv `/opt/unison-runtime/venv-8d6615843eb0`, built from wheels with `pip check`. UCM copy `/opt/unison-runtime/ucm-207af0a3b6db`, tree hash verified.
+- Engine tests passed against the copied runtime.
+- The loopback candidate passed on a disposable database: all eight rules, previews, watering, discovery, share pages, the moderation lifecycle and preservation.
+- Private backup at `/var/backups/unison-backend/20261118T045924Z`. Pruning found nothing to remove (7 frontend and 8 API releases, 7 deploy backups).
+
+After deployment:
+- The **14 original ideas** have the same public fingerprint (`5f2d135734f70053`) before and after. No idea, reaction or report was written by verification.
+- The service runs `/opt/unison-backend/current/venv/bin/uvicorn` with `ProtectHome=yes`. `/home/micu` is not accessible from its mount namespace. `runtime.env` names the copied UCM.
+- `unison-backup.timer` is enabled. A manual run succeeded as `unisonapp` and wrote a 0600 snapshot to `/var/lib/unison-backups`.
+- Headers:
+  - HTML has one `Cache-Control: no-store`;
+  - hashed assets have one `public, max-age=31536000, immutable`;
+  - the CSP, HSTS and frame headers are present on HTML, share pages, sitemap, feed and manifest;
+  - POST to `/index.html` and `/i/{id}` returns 403;
+  - an unknown `/i/{id}` returns 404 with `X-Robots-Tag: noindex, nofollow`.
+- Chromium on the public domain was checked at 1366px, at 390px, in Discover, in the inspector deep link, in the Romanian locale (`lang="ro"`) and on the share page. There were no console, page or CSP errors and no failed application requests. The live WebSocket connected and the service worker registered. Cloudflare's own `/cdn-cgi/` beacons were excluded from the request checks.
+
+Known and accepted:
+- Cloudflare's zone "Browser Cache TTL" rewrites `sw.js` and `robots.txt` to `max-age=14400`, although the origin sends `no-cache`. Browsers bypass the HTTP cache for service-worker update checks, so new workers still install. Setting the zone to "Respect existing headers" would remove the difference, but it is a Cloudflare change outside this release.
+- On the first WebSocket open, the client re-synchronizes once. This aborts and repeats the initial statistics and seed requests (about three small extra requests per visit). The behavior is correct; skipping that first re-sync is a candidate for the next release.
+- All 14 legacy ideas have unknown (`NULL`) creation times. They count as mature for indexing and do not appear in the 30-day activity chart.
+
+## Initial release (2026-11-17)
+
+Deployed code revision: `206c6004a210178c23a2008a09a3fa8e4f6b978a`.
 
 ## Moderation follow-up release
 
@@ -49,4 +88,4 @@ Completed:
 
 GitHub workflows are prepared and locally exercised; they have not run on GitHub until these commits are pushed. CI browser tests use isolated fixtures, while the real engine is exercised locally and by the VPS candidate. No remote push, account creation, external message, paid integration or new analytics service is part of this release.
 
-The public board now has reporting and operator moderation; the owner must actually review the queue. Private workspaces, accounts/ownership, retention rules, alert delivery and scheduled off-host backups remain the next priorities. Only the landing page is submitted in the sitemap; hash-based public idea links are client navigation, not individually indexed documents.
+The public board now has reporting and operator moderation; the owner must actually review the queue. Private workspaces, accounts/ownership, retention rules, alert delivery and off-host copies of the daily backups remain the next priorities. Since v2, the dynamic sitemap lists `/i/{id}` pages that are at least 48 hours old and have no open reports.
