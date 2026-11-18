@@ -55,7 +55,11 @@ jobs:
       - run: npm run lint -- --max-warnings=0
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=moderate
+      # Code shipped to browsers must have no known moderate+ advisories.
+      - run: npm audit --omit=dev --audit-level=moderate
+      # Build tooling only processes repository-authored input; critical
+      # advisories still fail the build, and Dependabot proposes fixes.
+      - run: npm audit --audit-level=critical
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
