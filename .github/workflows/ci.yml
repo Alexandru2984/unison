@@ -23,13 +23,19 @@ jobs:
         with:
           python-version: '3.14'
           cache: pip
-          cache-dependency-path: backend/requirements*.txt
+          cache-dependency-path: backend/requirements*
       - run: python -m pip install -r backend/requirements-dev.txt
       - run: python -m unittest discover -s backend -v
       - run: python -m unittest discover -s scripts -v
-      - run: pip-audit -r backend/requirements.txt --no-deps --disable-pip --progress-spinner=off
-      - run: bash -n deploy.sh backend/run_backend.sh
-      - run: shellcheck deploy.sh backend/run_backend.sh
+      # deploy.sh builds the production virtualenv from these exact wheels.
+      - name: Verify the hash-locked runtime installs from wheels
+        run: >-
+          python -m pip download --disable-pip-version-check --no-deps
+          --require-hashes --only-binary=:all: --dest "$RUNNER_TEMP/wheels"
+          -r backend/requirements.lock
+      - run: pip-audit -r backend/requirements.lock --require-hashes --disable-pip --progress-spinner=off
+      - run: bash -n deploy.sh backend/run_backend.sh scripts/check_nginx.sh
+      - run: shellcheck deploy.sh backend/run_backend.sh scripts/check_nginx.sh
   frontend:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

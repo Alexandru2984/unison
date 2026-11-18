@@ -89,22 +89,28 @@ Legacy API rollback is blocked after content has been hidden, preventing a pre-m
 
 Scope: the deployed revision `206c600`, its live Nginx/systemd configuration (identical to the repository) and reproducible engine build (byte-identical to production). Every finding below was reproduced against a temporary database or by reading the effective configuration; no production writes were made.
 
-| ID | Severity | Evidence and impact | Stage |
+| ID | Severity | Evidence and impact | Status |
 | --- | --- | --- | --- |
-| V-01 | High | The application rate limiter and WebSocket per-address cap key on the full client address. Rotating 50 addresses inside one IPv6 /64 passed 50/50 requests through a bucket of capacity 2. Nginx keys on `$binary_remote_addr` too, so neither layer bounds an IPv6 client. | E1 |
-| V-02 | High | Capacity exhaustion: 10 writes/min/address against a 10000-idea board lets one actor fill the board in about 17 hours, after which every visitor receives 507 until an operator intervenes. No daily or global write budget exists. | E1 |
-| V-03 | Medium | Only `Cc`/`Cs` characters are rejected. Bidi overrides (U+202E, "Trojan Source" spoofing), zero-width-only text (an invisible idea) and Unicode tag characters (invisible ASCII smuggling) are accepted and published. | E1 |
-| V-04 | Medium | Unlimited combining marks ("zalgo", 500 marks on one letter) are accepted and overflow cards and the graph. | E1 |
-| V-05 | Medium | Links and web addresses are accepted in anonymous public text, the dominant form of board spam. | E1 |
-| V-06 | Medium | Identical seeds and repeated deterministic mutations of one parent create duplicate records that consume capacity. Text hidden by moderation can be republished verbatim. | E1 |
-| V-07 | Low | The report quota counts resolved and dismissed reports, so reporting stops permanently after 10000 lifetime reports. | E1 |
-| V-08 | Low | 48 WebSockets per process; every later visitor silently falls back to 25-second polling. | E1 |
-| OPS-01 | Medium | The service executes the virtual environment and UCM runtime from the developer checkout (`BindReadOnlyPaths=/home/micu/unisonTrying`). `deploy.sh` upgrades that live environment before candidate verification; rollback cannot restore dependencies. | E6 |
-| OPS-02 | Medium | Backups exist only at deployment time; no scheduled backup, and releases/backups are never pruned. | E6 |
-| OPS-03 | Low | HTML responses carry two `Cache-Control` headers (`expires -1` and `no-store`); `/index.html` lacks a method restriction. | E6 |
-| DEV-01 | Low | The production virtual environment lacks test dependencies, and Starlette 1.7 deprecates `httpx` in favor of `httpx2` for its test client. | E6 |
-| FE-01 | Low | The browser rejects a whole page of results containing an unknown transformation, so adding engine rules would break already-open tabs and frontend rollbacks. | E2 |
+| V-01 | High | The application rate limiter and WebSocket per-address cap key on the full client address. Rotating 50 addresses inside one IPv6 /64 passed 50/50 requests through a bucket of capacity 2. Nginx keys on `$binary_remote_addr` too, so neither layer bounds an IPv6 client. | Fixed in E1 (`097ce5f`): the application groups IPv6 by /64 for HTTP buckets, write budgets and WebSockets. Nginx still limits per address as a coarse outer layer. |
+| V-02 | High | Capacity exhaustion: 10 writes/min/address against a 10000-idea board lets one actor fill the board in about 17 hours, after which every visitor receives 507 until an operator intervenes. No daily or global write budget exists. | Fixed in E1 (`097ce5f`): 150 ideas per client per day and 600 per hour globally, configurable, with `Retry-After`. |
+| V-03 | Medium | Only `Cc`/`Cs` characters are rejected. Bidi overrides (U+202E, "Trojan Source" spoofing), zero-width-only text (an invisible idea) and Unicode tag characters (invisible ASCII smuggling) are accepted and published. | Fixed in E1 (`097ce5f`): format characters other than ZWJ/ZWNJ/LRM/RLM, private-use and unassigned code points are rejected, and visible text is required. Engine output is checked against the same policy. |
+| V-04 | Medium | Unlimited combining marks ("zalgo", 500 marks on one letter) are accepted and overflow cards and the graph. | Fixed in E1 (`097ce5f`): at most three consecutive combining marks. |
+| V-05 | Medium | Links and web addresses are accepted in anonymous public text, the dominant form of board spam. | Fixed in E1 (`097ce5f`): URLs, `www.` and common-TLD domains are rejected in submitted text. |
+| V-06 | Medium | Identical seeds and repeated deterministic mutations of one parent create duplicate records that consume capacity. Text hidden by moderation can be republished verbatim. | Fixed in E1 (`097ce5f`): duplicates return the existing idea; moderated text returns 409. |
+| V-07 | Low | The report quota counts resolved and dismissed reports, so reporting stops permanently after 10000 lifetime reports. | Fixed in E1 (`097ce5f`): only open reports count toward the quota. |
+| V-08 | Low | 48 WebSockets per process; every later visitor silently falls back to 25-second polling. | Fixed in E1 (`097ce5f`): the socket cap is configurable with `MAX_SOCKETS` (default 256). |
+| OPS-01 | Medium | The service executes the virtual environment and UCM runtime from the developer checkout (`BindReadOnlyPaths=/home/micu/unisonTrying`). `deploy.sh` upgrades that live environment before candidate verification; rollback cannot restore dependencies. | Fixed in E6 (`d151ebb`): root-owned, hash-locked virtualenv and verified UCM copy per release; the unit uses `ProtectHome=yes` and the rollback restores it. |
+| OPS-02 | Medium | Backups exist only at deployment time; no scheduled backup, and releases/backups are never pruned. | Fixed in E6 (`d151ebb`): daily verified snapshots (14 kept) and safe pruning after each release. |
+| OPS-03 | Low | HTML responses carry two `Cache-Control` headers (`expires -1` and `no-store`); `/index.html` lacks a method restriction. | Fixed in E6 (`d151ebb`). |
+| DEV-01 | Low | The production virtual environment lacks test dependencies, and Starlette 1.7 deprecates `httpx` in favor of `httpx2` for its test client. | Fixed in E6 (`d151ebb`): `httpx2` and pip-tools in the development requirements. |
+| FE-01 | Low | The browser rejects a whole page of results containing an unknown transformation, so adding engine rules would break already-open tabs and frontend rollbacks. | Fixed in E2 (`d628bd0`): unknown rules render with a generic label. |
 
 Confirmed absent in this pass: SQL injection (parameterized queries throughout), shell injection (argument vectors), stored XSS (React text nodes, escaped Markdown export), CSRF on writes (origin + JSON content-type checks), clickjacking (frame-ancestors/X-Frame-Options), open CORS. Real-IP handling is correct: Nginx trusts `CF-Connecting-IP` only from Cloudflare ranges and the local tunnel, and Uvicorn trusts `X-Forwarded-For` only from loopback.
 
 Remediation and new product scope are tracked in [the v2 plan](PLAN.md#v2-iteration-2026-11-18).
+
+New surface added in v2 and how it is bounded:
+- **Share pages, sitemap and feed.** All text goes through `html.escape`; JSON-LD escapes `<`, `>` and `&`, so user text cannot close the block; the CSP is unchanged and allows no inline script. Characters that are invalid in XML are removed. Hidden ideas return 404 `noindex`. GET/HEAD only, with request limits.
+- **Previews.** Nothing is persisted. They run in the same bounded engine slots, with their own Nginx zone and application bucket, and idea previews are cached by id.
+- **Watering.** One reaction per client per idea per day, deduplicated in memory with a per-process secret HMAC. No address is stored, the deduplication map is bounded, and hidden ideas return 404.
+- **Service worker.** It caches only same-origin `/assets` and the app shell, never `/api` or `/ws`, and is blocked in browser tests.

@@ -8,21 +8,29 @@
     <title>Idea Evolution — Explore what your next idea can become</title>
     <meta
       name="description"
-      content="Plant an idea, explore four deterministic Unison transformations, and follow a visual tree of possibilities. Compare branches, save favorites, and share what grows."
+      content="Plant an idea, preview eight deterministic Unison transformations and follow a living tree of possibilities. Water, save and share what grows."
     />
     <link rel="canonical" href="https://unison.micutu.com/" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <link
+      rel="alternate"
+      type="application/atom+xml"
+      title="Idea Evolution: new seed ideas"
+      href="/feed.xml"
+    />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Idea Garden" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Idea Evolution" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="ro_RO" />
     <meta property="og:title" content="Idea Evolution — The possibility lab" />
     <meta
       property="og:description"
-      content="One thought. Many directions. Plant an idea, explore its branches, and see what grows."
+      content="One thought. Many directions. Plant an idea, preview eight transformations and see what grows."
     />
     <meta property="og:url" content="https://unison.micutu.com/" />
     <meta
@@ -39,7 +47,7 @@
     <meta name="twitter:title" content="Idea Evolution — The possibility lab" />
     <meta
       name="twitter:description"
-      content="Explore what your next idea can become. A shared playground powered by pure Unison functions."
+      content="Explore what your next idea can become. A shared garden of ideas powered by pure Unison functions."
     />
     <meta
       name="twitter:image"
@@ -48,13 +56,37 @@
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
-        "@type": "WebApplication",
-        "name": "Idea Evolution",
-        "url": "https://unison.micutu.com/",
-        "description": "A public idea exploration workspace with deterministic text transformations, a branching graph, comparisons and exports.",
-        "applicationCategory": "ProductivityApplication",
-        "operatingSystem": "Web browser",
-        "isAccessibleForFree": true
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://unison.micutu.com/#website",
+            "name": "Idea Evolution",
+            "url": "https://unison.micutu.com/",
+            "inLanguage": ["en", "ro"]
+          },
+          {
+            "@type": "WebApplication",
+            "@id": "https://unison.micutu.com/#app",
+            "name": "Idea Evolution",
+            "url": "https://unison.micutu.com/",
+            "isPartOf": { "@id": "https://unison.micutu.com/#website" },
+            "description": "A public idea garden: plant a thought, preview eight deterministic Unison transformations, branch the results and explore the living graph.",
+            "applicationCategory": "ProductivityApplication",
+            "operatingSystem": "Web browser",
+            "browserRequirements": "Requires JavaScript",
+            "inLanguage": ["en", "ro"],
+            "isAccessibleForFree": true,
+            "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+            "featureList": [
+              "Eight deterministic text transformations with previews",
+              "Interactive idea graph with replay",
+              "Discovery of trending, branching and unexplored ideas",
+              "Shareable idea pages and image cards",
+              "English and Romanian interface",
+              "Installable progressive web app"
+            ]
+          }
+        ]
       }
     </script>
   </head>
@@ -65,18 +97,30 @@
         <h1>Idea Evolution: a garden for your next idea.</h1>
         <p>
           Plant a thought on a shared public board, then explore what it can
-          become. Four pure Unison functions expand, rephrase, amplify or
-          synthesize your text into reproducible branches.
+          become. Eight pure Unison functions expand, rephrase, amplify,
+          synthesize, question, twist, headline or flip your text into
+          reproducible branches, and you can preview every result before you
+          plant it.
         </p>
         <h2>Explore ideas from every angle</h2>
         <p>
-          Follow the visual graph or browse the list. Search the garden, compare
-          a variation with its parent, save favorites on your device, and export
-          your discoveries as JSON or Markdown.
+          Follow the living graph or browse the list. Discover trending and
+          unexplored ideas, water the ones you like, replay how the garden grew,
+          save favorites on your device and share any idea through its own
+          page or image card.
         </p>
         <p>
-          Published ideas are public. Drafts and bookmarks stay in your browser.
+          Published ideas are public. Drafts, bookmarks and your list of planted
+          ideas stay in your browser.
         </p>
+        <section lang="ro">
+          <h2>Grădina de idei, și în română</h2>
+          <p>
+            Plantează o idee, previzualizează opt transformări deterministe și
+            urmărește cum crește un arbore de posibilități. Interfața este
+            disponibilă în română și în engleză.
+          </p>
+        </section>
         <noscript
           ><p>
             Enable JavaScript to open the interactive workspace. The idea graph,
