@@ -2,6 +2,29 @@
 
 **Published:** https://unison.micutu.com/
 
+## v2.1 release: off-host backups (2026-11-18)
+
+Deployed code revision: `6efc9b410c37a88a05bb85dcf310c0513b53be08`. It covers the verified, encrypted off-host backups (`371684e`) and the first-load fix (`6efc9b4`).
+
+Before deployment:
+- Operations: 20 tests. Nine of them are new, and they drive a real rclone crypt remote on local disk: encrypted names and contents, idempotent reruns, tampering and truncation detection, stale or invalid snapshots, retention that touches only its own archives, and restore. Backend: 69 tests. Frontend: 14 unit and 26 Playwright tests, lint, build, shellcheck.
+- The new Playwright test delays the first response so that the socket opens during the initial load. It failed against the previous build (two cancelled requests) and passes with the fix.
+- The sandbox was rehearsed in transient units built from the real unit file, using a synthetic database:
+  - with the group, the upload succeeded;
+  - without `SupplementaryGroups=unisonapp`, snapshots were unreadable;
+  - a read-only listing of the Drive folder worked from inside the sandbox.
+- The credential `/etc/unison-backend/offsite-rclone.conf` (root, 0600) holds only the `gdrive` and `gdrive-vps-crypt` remotes. Its secrets match the existing configuration, compared by hash without being displayed.
+
+Deployment: `sudo ./deploy.sh` exited 0, the candidate smoke passed, and there was no rollback. Private backup: `/var/backups/unison-backend/20261118T123756Z`. Both backup units received the `OnFailure=swift-vapor-alert@%n.service` drop-in.
+
+After deployment:
+- `systemctl start unison-backup.service` wrote `evolution-20261118T123920Z.db` with mode 0640 in a 0750 directory. `OnSuccess=` then started the upload: 69,632 bytes became a 3,111-byte archive, which was uploaded, downloaded, restored and verified in 24 s. `status.json` records the result.
+- Restore drill in a private-tmp unit: `offsite.py list` and `fetch` produced a database byte-identical to the local snapshot, with `integrity_check` ok and 14 ideas. The credential file was not modified.
+- The raw Drive folder contains no plaintext `evolution` or `unison` names.
+- The public fingerprint is unchanged (`5f2d135734f70053`, the same 14 ids). Health, `release.json` and the security headers are correct. The five public browser checks pass even when no cancelled request is tolerated.
+
+Known: the Google token has full Drive scope and is shared with the other applications on this VPS, and root on the VPS could delete the copies (Drive trash keeps them for 30 days). CI runs on GitHub only after a push.
+
 ## v2 release (2026-11-18)
 
 Deployed code revision: `74863e70f8498eaa42565760415f78fd47f7d534`. This documentation commit follows the deployment; `/api/health` and `/release.json` identify the running code. Stages E1–E7 and the audit findings they fix are listed in [PLAN.md](PLAN.md#v2-iteration-2026-11-18) and [SECURITY_AUDIT.md](SECURITY_AUDIT.md#audit-2026-11-18-v2-iteration).
