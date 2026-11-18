@@ -56,6 +56,10 @@ export function useWorkspace(query: BoardQuery) {
     [contentEpoch, setContentEpoch] = useState(0);
   const knownVersion = useRef<number | null>(null),
     epoch = useRef(0);
+  // A socket that opens during a board load asks for one catch-up after it
+  // instead of aborting and restarting the load.
+  const inFlight = useRef<AbortController | null>(null),
+    catchUp = useRef(false);
   const [connection, setConnection] = useState("connecting"),
     [moreBusy, setMoreBusy] = useState(false),
     moreLock = useRef(false);
@@ -126,6 +130,7 @@ export function useWorkspace(query: BoardQuery) {
   useEffect(() => {
     const controller = new AbortController();
     const started = epoch.current;
+    inFlight.current = controller;
     async function load() {
       try {
         const config = JSON.parse(key) as QueryConfig;
@@ -211,11 +216,19 @@ export function useWorkspace(query: BoardQuery) {
                 ? error.message
                 : "Cannot reach the workspace. Please try again.",
           }));
+      } finally {
+        if (inFlight.current === controller && !controller.signal.aborted) {
+          inFlight.current = null;
+          if (catchUp.current) {
+            catchUp.current = false;
+            refresh();
+          }
+        }
       }
     }
     void load();
     return () => controller.abort();
-  }, [key, revision, acceptVersion]);
+  }, [key, revision, acceptVersion, refresh]);
 
   const loadMore = useCallback(async () => {
     if (moreLock.current || !snapshot.ideas.length || !snapshot.hasMore) return;
@@ -284,7 +297,9 @@ export function useWorkspace(query: BoardQuery) {
         if (!disposed) {
           attempt = 0;
           setConnection("live");
-          refresh();
+          // Catch up on changes made while the socket was connecting.
+          if (inFlight.current) catchUp.current = true;
+          else refresh();
         }
       };
       socket.onmessage = (event) => {

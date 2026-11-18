@@ -220,3 +220,35 @@ test.describe("Romanian visitors", () => {
     );
   });
 });
+
+test("the live connection does not restart the first board load", async ({
+  page,
+}) => {
+  await mockBoard(page);
+  // A slow first response, as on real networks: the socket opens mid-load.
+  let slow = true;
+  await page.route("**/api/stats", async (route) => {
+    if (slow) await new Promise((resolve) => setTimeout(resolve, 400));
+    slow = false;
+    await route.fallback();
+  });
+  const failed: string[] = [],
+    boardLoads: string[] = [];
+  page.on("requestfailed", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/"))
+      failed.push(request.url());
+  });
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/idea" && !url.searchParams.has("roots_only"))
+      boardLoads.push(url.search);
+  });
+  await page.goto("/");
+  await expect(page.locator(".connection.live")).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(failed).toEqual([]);
+  // One full load, then at most one incremental catch-up for the connect gap.
+  expect(boardLoads[0]).not.toContain("after=");
+  expect(boardLoads.slice(1).every((query) => query.includes("after="))).toBe(true);
+  expect(boardLoads.length).toBeLessThanOrEqual(2);
+});
