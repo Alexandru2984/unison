@@ -14,14 +14,20 @@ import ReactFlow, {
 } from "reactflow";
 import dagre from "dagre";
 import "reactflow/dist/style.css";
-import { mutationName, type Idea } from "../lib/ideas";
+import type { Idea } from "../lib/ideas";
+import type { Translate } from "../lib/i18n";
+import { ideaLabel, shortId } from "../lib/rules";
+import { useI18n } from "../lib/useI18n";
 import Icon from "./Icon";
 
 interface CardData {
   idea: Idea;
   saved: boolean;
   count: number;
+  water: number;
+  fresh: boolean;
   horizontal: boolean;
+  t: Translate;
   onBookmark: (idea: Idea) => void;
   onSelect: (idea: Idea) => void;
 }
@@ -31,9 +37,9 @@ const IdeaCard = memo(function IdeaCard({
 }: NodeProps<CardData>) {
   return (
     <div
-      className={`idea-node ${data.idea.mutation} ${selected ? "is-selected" : ""}`}
+      className={`idea-node ${data.idea.mutation} ${selected ? "is-selected" : ""} ${data.fresh ? "just-planted" : ""}`}
       role="group"
-      aria-label={`Idea ${data.idea.id}`}
+      aria-label={data.t("idea.label", { id: data.idea.id })}
     >
       <Handle
         type="target"
@@ -42,13 +48,15 @@ const IdeaCard = memo(function IdeaCard({
       />
       <div className="node-top">
         <span className={`tag ${data.idea.mutation}`}>
-          {data.idea.parent_id === null
-            ? "Seed idea"
-            : mutationName(data.idea.mutation)}
+          {ideaLabel(data.t, data.idea)}
         </span>
         <button
           className={`icon-button tiny nodrag ${data.saved ? "is-saved" : ""}`}
-          aria-label={`${data.saved ? "Unsave" : "Save"} idea ${data.idea.id}`}
+          aria-label={
+            data.saved
+              ? data.t("idea.unsave", { id: data.idea.id })
+              : data.t("idea.save", { id: data.idea.id })
+          }
           aria-pressed={data.saved}
           onClick={(e) => {
             e.stopPropagation();
@@ -67,10 +75,16 @@ const IdeaCard = memo(function IdeaCard({
       >
         <span className="node-text">{data.idea.content}</span>
         <span className="node-footer">
-          <span>#{String(data.idea.id).padStart(3, "0")}</span>
-          <span>
-            <Icon name="branch" size={13} /> {data.count}{" "}
-            {data.count === 1 ? "branch" : "branches"}
+          <span>{shortId(data.idea.id)}</span>
+          <span className="counters">
+            <span>
+              <Icon name="branch" size={13} /> {data.count}
+              <span className="sr-only"> {data.t("inspector.branches")}</span>
+            </span>
+            <span className={data.water ? "has-water" : ""}>
+              <Icon name="drop" size={13} /> {data.water}
+              <span className="sr-only"> {data.t("inspector.water")}</span>
+            </span>
           </span>
         </span>
       </button>
@@ -105,6 +119,9 @@ interface Props {
   ideas: Idea[];
   selectedId: number | null;
   bookmarks: number[];
+  water: Record<number, number>;
+  branches: (idea: Idea) => number;
+  fresh: number | null;
   horizontal: boolean;
   theme: string;
   onSelect: (idea: Idea) => void;
@@ -114,11 +131,15 @@ function Graph({
   ideas,
   selectedId,
   bookmarks,
+  water,
+  branches,
+  fresh,
   horizontal,
   theme,
   onSelect,
   onBookmark,
 }: Props) {
+  const { t } = useI18n();
   const { nodes, edges } = useMemo(() => {
     // A fresh graph prevents stale nodes and edges surviving a filter change.
     const layout = new dagre.graphlib.Graph();
@@ -130,11 +151,7 @@ function Graph({
       marginx: 30,
       marginy: 30,
     });
-    const ids = new Set(ideas.map((i) => i.id)),
-      counts = new Map<number, number>();
-    for (const idea of ideas)
-      if (idea.parent_id !== null)
-        counts.set(idea.parent_id, (counts.get(idea.parent_id) ?? 0) + 1);
+    const ids = new Set(ideas.map((i) => i.id));
     const graphEdges: Edge[] = [];
     for (const idea of ideas) {
       layout.setNode(String(idea.id), { width: 236, height: 174 });
@@ -158,8 +175,11 @@ function Graph({
         data: {
           idea,
           saved: bookmarks.includes(idea.id),
-          count: counts.get(idea.id) ?? 0,
+          count: branches(idea),
+          water: water[idea.id] ?? idea.water ?? 0,
+          fresh: idea.id === fresh,
           horizontal,
+          t,
           onBookmark,
           onSelect,
         },
@@ -170,7 +190,7 @@ function Graph({
       };
     });
     return { nodes: graphNodes, edges: graphEdges };
-  }, [ideas, selectedId, bookmarks, horizontal, onBookmark, onSelect]);
+  }, [ideas, selectedId, bookmarks, water, branches, fresh, horizontal, t, onBookmark, onSelect]);
   return (
     <ReactFlow
       nodes={nodes}
@@ -189,7 +209,7 @@ function Graph({
       fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
       onlyRenderVisibleElements
       proOptions={{ hideAttribution: false }}
-      aria-label="Interactive idea evolution graph"
+      aria-label={t("graph.label")}
     >
       <Background
         variant={BackgroundVariant.Dots}

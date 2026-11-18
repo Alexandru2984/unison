@@ -1,13 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Icon from "./Icon";
 import { apiError } from "../lib/ideas";
-const reasons = [
-  { id: "spam", name: "Spam or advertising" },
-  { id: "harassment", name: "Harassment or hateful content" },
-  { id: "privacy", name: "Personal or confidential information" },
-  { id: "unsafe", name: "Dangerous or harmful content" },
-  { id: "other", name: "Another concern" },
-];
+import { useI18n } from "../lib/useI18n";
+const reasons = ["spam", "harassment", "privacy", "unsafe", "other"] as const;
 export default function ReportDialog({
   ideaId,
   onClose,
@@ -15,6 +10,7 @@ export default function ReportDialog({
   ideaId: number;
   onClose: () => void;
 }) {
+  const { t, lang } = useI18n();
   const dialog = useRef<HTMLDialogElement>(null),
     controller = useRef<AbortController | null>(null),
     locked = useRef(false);
@@ -45,14 +41,14 @@ export default function ReportDialog({
         body: JSON.stringify({ reason }),
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
       });
-      if (!response.ok) throw new Error(await apiError(response));
+      if (!response.ok) throw new Error(await apiError(response, lang));
       if (!request.signal.aborted) setSent(true);
     } catch (failure) {
       if (!request.signal.aborted)
         setError(
           failure instanceof Error && failure.name !== "TimeoutError"
             ? failure.message
-            : "The report could not be sent. Please try again.",
+            : t("report.failed"),
         );
     } finally {
       locked.current = false;
@@ -66,51 +62,44 @@ export default function ReportDialog({
       aria-labelledby="report-title"
       onCancel={onClose}
     >
-      <div className="inspector-heading">
-        <span className="eyebrow">KEEP THE GARDEN WELCOMING</span>
+      <div className="dialog-heading">
+        <span className="eyebrow">{t("report.eyebrow")}</span>
         <button
           className="icon-button"
           onClick={onClose}
-          aria-label="Close report"
+          aria-label={t("report.close")}
         >
           <Icon name="close" />
         </button>
       </div>
       <h2 id="report-title">
-        {sent ? "Report received." : `Report idea #${ideaId}`}
+        {sent ? t("report.received") : t("report.title", { id: ideaId })}
       </h2>
       {sent ? (
         <>
-          <p role="status">
-            Thank you. Your report is in the private review queue. The site
-            operator reviews reports before taking action.
-          </p>
+          <p role="status">{t("report.thanks")}</p>
           <button className="button primary full" onClick={onClose} autoFocus>
-            Done
+            {t("report.done")}
           </button>
         </>
       ) : (
         <form onSubmit={(event) => void submit(event)}>
           <fieldset disabled={busy}>
-            <legend>Why are you reporting this idea?</legend>
+            <legend>{t("report.why")}</legend>
             {reasons.map((item) => (
-              <label className="report-option" key={item.id}>
+              <label className="report-option" key={item}>
                 <input
                   type="radio"
                   name="reason"
-                  value={item.id}
-                  checked={reason === item.id}
-                  onChange={() => setReason(item.id)}
+                  value={item}
+                  checked={reason === item}
+                  onChange={() => setReason(item)}
                 />
-                <span>{item.name}</span>
+                <span>{t(`report.${item}`)}</span>
               </label>
             ))}
           </fieldset>
-          <p className="privacy-note">
-            Reports are private. The report record contains the idea ID, your
-            selected reason and submission time. Repeated reports do not
-            automatically remove an idea.
-          </p>
+          <p className="privacy-note">{t("report.note")}</p>
           {error && (
             <p role="alert" className="error-text small">
               {error}
@@ -118,7 +107,7 @@ export default function ReportDialog({
           )}
           <div className="report-actions">
             <button className="button subtle" type="button" onClick={onClose}>
-              Cancel
+              {t("report.cancel")}
             </button>
             <button
               className="button primary"
@@ -127,10 +116,10 @@ export default function ReportDialog({
             >
               {busy ? (
                 <>
-                  <span className="spinner" /> Sending…
+                  <span className="spinner" /> {t("report.sending")}
                 </>
               ) : (
-                "Send report"
+                t("report.send")
               )}
             </button>
           </div>

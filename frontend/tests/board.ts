@@ -1,6 +1,18 @@
 import { type Page, type WebSocketRoute } from "@playwright/test";
 import type { Idea } from "../src/lib/ideas";
 
+const RULES = [
+  "expand",
+  "rephrase",
+  "mutate_keywords",
+  "synthesize",
+  "question",
+  "twist",
+  "headline",
+  "flip",
+];
+const ruleTitle = (rule: string) => rule.charAt(0).toUpperCase() + rule.slice(1);
+
 export const fixtures: Idea[] = [
   {
     id: 1,
@@ -44,6 +56,27 @@ export async function mockBoard(page: Page, initial = fixtures) {
   let pausedWrite: Promise<void> | null = null;
   let sockets = 0,
     failNextWrite = false;
+  const water = new Map<number, number>(),
+    watered = new Set<number>(),
+    previews: string[] = [];
+  const visible = () => ideas.filter((i) => !hidden.has(i.id));
+  // Responses carry the same live counters as the real API.
+  const counted = (idea: Idea): Idea => ({
+    ...idea,
+    children: visible().filter((c) => c.parent_id === idea.id).length,
+    water: water.get(idea.id) ?? 0,
+  });
+  const previewRows = (text: string, parentId: number | null) =>
+    RULES.map((rule) => ({
+      mutation: rule,
+      content: `${ruleTitle(rule)} preview of ${text.slice(0, 24)}`,
+      unchanged: false,
+      existing_id:
+        parentId === null
+          ? null
+          : (visible().find((c) => c.parent_id === parentId && c.mutation === rule)
+              ?.id ?? null),
+    }));
   await page.routeWebSocket("**/ws", (peer) => {
     sockets++;
     peers.push(peer);
@@ -63,7 +96,8 @@ export async function mockBoard(page: Page, initial = fixtures) {
         body: JSON.stringify(body),
         headers,
       });
-    if (path === "/api/stats")
+    if (path === "/api/stats") {
+      const today = new Date();
       return reply({
         board_revision: boardRevision,
         total: ideas.filter((i) => !hidden.has(i.id)).length,
@@ -72,7 +106,59 @@ export async function mockBoard(page: Page, initial = fixtures) {
         max_depth: Math.max(0, ...ideas.map((i) => i.depth)),
         capacity: 10000,
         max_branch_depth: 32,
+        water: visible().reduce((sum, i) => sum + (water.get(i.id) ?? 0), 0),
+        activity: Array.from({ length: 30 }, (_, index) => {
+          const day = new Date(today.getTime() - (29 - index) * 86_400_000)
+            .toISOString()
+            .slice(0, 10);
+          return { day, ideas: index % 4 };
+        }),
       });
+    }
+    if (path === "/api/discover") {
+      const rows = visible().map(counted);
+      const newest = (list: Idea[]) =>
+        list.sort((a, b) => b.id - a.id).slice(0, 8);
+      return reply({
+        trending: newest(rows.filter((i) => (i.water ?? 0) > 0)),
+        branching: newest(rows.filter((i) => (i.children ?? 0) > 0)),
+        unexplored: newest(rows.filter((i) => i.children === 0)),
+        fresh: newest(rows.filter((i) => i.parent_id === null)),
+        deepest: newest(rows.filter((i) => i.depth > 0)),
+      });
+    }
+    if (path === "/api/random") {
+      const first = visible()[0];
+      return first
+        ? reply(counted(first))
+        : reply({ detail: "The garden is empty" }, 404);
+    }
+    if (path === "/api/preview" && request.method() === "POST") {
+      const content = request.postDataJSON().content as string;
+      previews.push(content);
+      return reply({ results: previewRows(content, null) });
+    }
+    const preview = path.match(/^\/api\/idea\/(\d+)\/preview$/);
+    if (preview) {
+      const idea = visible().find((i) => i.id === Number(preview[1]));
+      if (!idea) return reply({ detail: "Idea not found" }, 404);
+      return reply({
+        idea_id: idea.id,
+        results: previewRows(idea.content, idea.id),
+      });
+    }
+    const watering = path.match(/^\/api\/idea\/(\d+)\/water$/);
+    if (watering && request.method() === "POST") {
+      const id = Number(watering[1]);
+      if (!visible().some((i) => i.id === id))
+        return reply({ detail: "Idea not found" }, 404);
+      const first = !watered.has(id);
+      if (first) {
+        watered.add(id);
+        water.set(id, (water.get(id) ?? 0) + 1);
+      }
+      return reply({ idea_id: id, water: water.get(id) ?? 0, counted: first });
+    }
     const lineage = path.match(/^\/api\/idea\/(\d+)\/lineage$/);
     if (lineage) {
       const result: Idea[] = [];
@@ -80,7 +166,7 @@ export async function mockBoard(page: Page, initial = fixtures) {
       while (id !== null) {
         const item = ideas.find((i) => i.id === id && !hidden.has(i.id));
         if (!item) break;
-        result.unshift(item);
+        result.unshift(counted(item));
         id = item.parent_id;
       }
       return result.length
@@ -141,6 +227,8 @@ export async function mockBoard(page: Page, initial = fixtures) {
         (!params.get("root_id") ||
           i.root_id === Number(params.get("root_id"))) &&
         (!params.get("roots_only") || i.parent_id === null) &&
+        (!params.get("leaves_only") ||
+          !visible().some((c) => c.parent_id === i.id)) &&
         (!params.has("after") || i.id > Number(params.get("after"))) &&
         (!params.has("before") || i.id < Number(params.get("before"))),
     );
@@ -152,7 +240,7 @@ export async function mockBoard(page: Page, initial = fixtures) {
     rows = rows.slice(0, limit);
     const cursor = rows.at(-1)?.id;
     return reply(
-      rows.sort((a, b) => a.id - b.id),
+      rows.sort((a, b) => a.id - b.id).map(counted),
       200,
       {
         "X-Has-More": String(hasMore),
@@ -165,6 +253,8 @@ export async function mockBoard(page: Page, initial = fixtures) {
     ideas,
     writes,
     reports,
+    previews,
+    water,
     moderate(id: number, notify = true) {
       hidden.add(id);
       for (let step = 0; step < 32; step++)

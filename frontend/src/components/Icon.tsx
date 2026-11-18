@@ -22,6 +22,17 @@ const paths = {
   spark: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z",
   lock: "M5 10h14v11H5zM8 10V6a4 4 0 0 1 8 0v4",
   check: "m5 12 4 4L19 6",
+  drop: "M12 3c3.6 4.3 6 7.7 6 10.7a6 6 0 0 1-12 0C6 10.7 8.4 7.3 12 3Z",
+  compass: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM15.5 8.5l-2 5-5 2 2-5z",
+  dice: "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1ZM9 9h.01M15 15h.01M15 9h.01M9 15h.01M12 12h.01",
+  play: "M8 5v14l11-7z",
+  pause: "M8 5h3v14H8zM13 5h3v14h-3z",
+  image: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15 9h.01",
+  link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9a7 7 0 0 1 14 0",
+  leaf: "M5 21c0-9 5-15 15-16-1 10-7 15-15 16Zm0 0 8-8",
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm10 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+  history: "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 3",
 };
 export type IconName = keyof typeof paths;
 export default function Icon({

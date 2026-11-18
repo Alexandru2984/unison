@@ -133,7 +133,10 @@ test("fits phones and tablets, opens the composer and persists the theme", async
     );
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "New idea", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Primary" })
+    .getByRole("button", { name: "Plant" })
+    .click();
   await expect(
     page.getByRole("textbox", { name: "Your new idea" }),
   ).toBeFocused();
@@ -228,11 +231,26 @@ test("loads older pages without losing newer results", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await expect(page.locator(".idea-list-card")).toHaveCount(200);
-  await page.getByRole("button", { name: "Load older ideas" }).click();
+  // Reaching the end of the list loads the next page automatically.
+  await page.locator(".idea-list-card").last().scrollIntoViewIfNeeded();
   await expect(page.locator(".idea-list-card")).toHaveCount(205);
   await expect(
     page.getByRole("button", { name: "Load older ideas" }),
   ).toHaveCount(0);
+});
+
+test("loads older pages from the graph footer", async ({ page }) => {
+  const data = Array.from({ length: 205 }, (_, index) => ({
+    ...fixtures[0],
+    id: index + 1,
+    root_id: index + 1,
+    content: `Pagination idea ${index + 1}`,
+  }));
+  await mockBoard(page, data);
+  await page.goto("/");
+  await expect(page.getByText("200+ loaded")).toBeVisible();
+  await page.getByRole("button", { name: "Load older ideas" }).click();
+  await expect(page.getByText("205 loaded")).toBeVisible();
 });
 
 test("reports privately with an accessible mobile dialog", async ({ page }) => {

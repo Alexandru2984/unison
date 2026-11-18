@@ -4,8 +4,25 @@ export interface BoardQuery {
   q: string;
   mutation: string;
   root: string;
-  saved: boolean;
-  bookmarks: number[];
+  /** Restricts the board to these IDs (saved or planted on this device). */
+  ids: number[] | null;
+  leaves: boolean;
+}
+interface QueryConfig {
+  q: string;
+  mutation: string;
+  root: string;
+  ids: string | null;
+  leaves: boolean;
+}
+function queryParams(config: QueryConfig) {
+  const params = new URLSearchParams({ limit: "200" });
+  if (config.q) params.set("q", config.q);
+  if (config.mutation) params.set("mutation", config.mutation);
+  if (config.root) params.set("root_id", config.root);
+  if (config.ids) params.set("ids", config.ids);
+  if (config.leaves) params.set("leaves_only", "true");
+  return params;
 }
 interface Snapshot {
   key: string;
@@ -19,8 +36,9 @@ export function useWorkspace(query: BoardQuery) {
     q: query.q,
     mutation: query.mutation,
     root: query.root,
-    ids: query.saved ? query.bookmarks.join(",") : null,
-  });
+    ids: query.ids ? query.ids.join(",") : null,
+    leaves: query.leaves,
+  } satisfies QueryConfig);
   const [snapshot, setSnapshot] = useState<Snapshot>({
     key: "",
     ideas: [],
@@ -39,7 +57,17 @@ export function useWorkspace(query: BoardQuery) {
   const knownVersion = useRef<number | null>(null),
     epoch = useRef(0);
   const [connection, setConnection] = useState("connecting"),
-    [moreBusy, setMoreBusy] = useState(false);
+    [moreBusy, setMoreBusy] = useState(false),
+    moreLock = useRef(false);
+  // Live reaction totals pushed by the server or returned to this visitor.
+  const [water, setWaterMap] = useState<Record<number, number>>({});
+  const setWater = useCallback(
+    (id: number, total: number) =>
+      setWaterMap((previous) =>
+        previous[id] === total ? previous : { ...previous, [id]: total },
+      ),
+    [],
+  );
   const refresh = useCallback(() => setRevision((n) => n + 1), []);
   const invalidate = useCallback(
     (version: number) => {
@@ -51,6 +79,7 @@ export function useWorkspace(query: BoardQuery) {
       setSnapshot({ key: "", ideas: [], cursor: 0, hasMore: false, error: "" });
       setStats(null);
       setSeeds([]);
+      setWaterMap({});
       refresh();
     },
     [refresh],
@@ -75,7 +104,7 @@ export function useWorkspace(query: BoardQuery) {
     (idea: Idea) => {
       // A response started before a moderation event cannot repopulate a purged cache.
       if (contentEpoch !== epoch.current) return;
-      const config = JSON.parse(key);
+      const config = JSON.parse(key) as QueryConfig;
       const matches =
         (!config.q ||
           idea.content.toLowerCase().includes(config.q.toLowerCase())) &&
@@ -99,17 +128,8 @@ export function useWorkspace(query: BoardQuery) {
     const started = epoch.current;
     async function load() {
       try {
-        const config = JSON.parse(key) as {
-          q: string;
-          mutation: string;
-          root: string;
-          ids: string | null;
-        };
-        const params = new URLSearchParams({ limit: "200" });
-        if (config.q) params.set("q", config.q);
-        if (config.mutation) params.set("mutation", config.mutation);
-        if (config.root) params.set("root_id", config.root);
-        if (config.ids) params.set("ids", config.ids);
+        const config = JSON.parse(key) as QueryConfig;
+        const params = queryParams(config);
         const previous = snapshotRef.current,
           incremental = previous.key === key && previous.ideas.length > 0;
         if (incremental) params.set("after", String(previous.cursor));
@@ -129,6 +149,13 @@ export function useWorkspace(query: BoardQuery) {
           if (!Array.isArray(body) || !body.every(isIdea))
             throw new Error("The server returned an unexpected response.");
           ideas = body;
+          const totals = body.filter((idea) => typeof idea.water === "number");
+          if (totals.length)
+            setWaterMap((previous) => {
+              const next = { ...previous };
+              for (const idea of totals) next[idea.id] = idea.water!;
+              return next;
+            });
           hasMore = response.headers.get("X-Has-More") === "true";
         }
         if (controller.signal.aborted || started !== epoch.current) return;
@@ -191,19 +218,16 @@ export function useWorkspace(query: BoardQuery) {
   }, [key, revision, acceptVersion]);
 
   const loadMore = useCallback(async () => {
-    if (moreBusy || !snapshot.ideas.length) return;
+    if (moreLock.current || !snapshot.ideas.length || !snapshot.hasMore) return;
+    moreLock.current = true;
     setMoreBusy(true);
     const started = epoch.current;
     try {
-      const config = JSON.parse(key),
-        params = new URLSearchParams({
-          limit: "200",
-          before: String(Math.min(...snapshot.ideas.map((i) => i.id))),
-        });
-      if (config.q) params.set("q", config.q);
-      if (config.mutation) params.set("mutation", config.mutation);
-      if (config.root) params.set("root_id", config.root);
-      if (config.ids) params.set("ids", config.ids);
+      const params = queryParams(JSON.parse(key) as QueryConfig);
+      params.set(
+        "before",
+        String(Math.min(...snapshot.ideas.map((i) => i.id))),
+      );
       const response = await fetch("/api/idea?" + params, {
         signal: AbortSignal.timeout(10_000),
       });
@@ -238,9 +262,10 @@ export function useWorkspace(query: BoardQuery) {
             },
       );
     } finally {
+      moreLock.current = false;
       setMoreBusy(false);
     }
-  }, [key, moreBusy, snapshot.ideas, acceptVersion]);
+  }, [key, snapshot.ideas, snapshot.hasMore, acceptVersion]);
 
   useEffect(() => {
     let disposed = false,
@@ -271,6 +296,12 @@ export function useWorkspace(query: BoardQuery) {
             data.revision >= 0
           )
             invalidate(data.revision);
+          else if (
+            data?.event === "water" &&
+            Number.isSafeInteger(data.id) &&
+            Number.isSafeInteger(data.water)
+          )
+            setWater(data.id, data.water);
           else if (data?.event === "ideas_changed" || isIdea(data)) refresh();
         } catch {
           /* Ignore unrelated events. */
@@ -322,7 +353,7 @@ export function useWorkspace(query: BoardQuery) {
       window.removeEventListener("offline", offline);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [refresh, invalidate]);
+  }, [refresh, invalidate, setWater]);
   return {
     ideas: snapshot.key === key ? snapshot.ideas : [],
     loading: snapshot.key !== key,
@@ -336,5 +367,7 @@ export function useWorkspace(query: BoardQuery) {
     refresh,
     upsert,
     contentEpoch,
+    water,
+    setWater,
   };
 }

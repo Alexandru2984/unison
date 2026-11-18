@@ -12,6 +12,8 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     reducedMotion: "reduce",
+    // Mocked API routes must see every request; the PWA test opts back in.
+    serviceWorkers: "block",
     colorScheme: "light",
   },
   projects: [

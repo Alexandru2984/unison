@@ -1,3 +1,5 @@
+import { localizeError, type Lang } from "./i18n.ts";
+
 export type KnownMutation =
   | "base"
   | "expand"
@@ -28,6 +30,8 @@ export interface Stats {
   max_depth: number;
   capacity: number;
   max_branch_depth: number;
+  water?: number;
+  activity?: { day: string; ideas: number }[];
 }
 export const mutations: {
   id: KnownMutation;
@@ -147,28 +151,46 @@ export function exportMarkdown(ideas: Idea[]): string {
       .join("\n")
   );
 }
-export function download(name: string, content: string, type: string) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
+export function download(name: string, content: string | Blob, type: string) {
+  const url = URL.createObjectURL(
+    content instanceof Blob ? content : new Blob([content], { type }),
+  );
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = name;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-export async function apiError(response: Response): Promise<string> {
-  if (response.status === 429)
-    return `A little breathing room. Try again in ${response.headers.get("Retry-After") ?? "30"} seconds.`;
+export async function apiError(
+  response: Response,
+  lang: Lang = "en",
+): Promise<string> {
+  const local = (message: string) => localizeError(lang, message);
+  let detail: unknown = null;
   try {
-    const value = await response.json();
-    if (typeof value.detail === "string") return value.detail;
-    if (Array.isArray(value.detail))
-      return value.detail
-        .map((e: { message?: string }) => e.message ?? "Invalid input")
-        .join(". ");
+    detail = (await response.json())?.detail;
   } catch {
-    /* Nginx may return an HTML error page. */
+    /* Nginx may return an HTML or plain-text error page. */
   }
-  return `The request could not be completed (${response.status}). Please try again.`;
+  if (response.status === 429) {
+    // Budget messages explain a longer wait; generic limiter messages do not.
+    if (typeof detail === "string" && !detail.startsWith("Too many"))
+      return local(detail);
+    const wait = Number(response.headers.get("Retry-After"));
+    return local(
+      `A little breathing room. Try again in ${Number.isSafeInteger(wait) && wait > 0 ? wait : 30} seconds.`,
+    );
+  }
+  if (typeof detail === "string") return local(detail);
+  if (Array.isArray(detail) && detail.length)
+    return detail
+      .map((e: { message?: unknown }) =>
+        local(typeof e?.message === "string" ? e.message : "Invalid input"),
+      )
+      .join(" · ");
+  return local(
+    `The request could not be completed (${response.status}). Please try again.`,
+  );
 }
 export type DiffToken = { text: string; changed: boolean };
 export function wordDiff(
@@ -208,4 +230,36 @@ export function wordDiff(
     else right.push({ text: b[j++], changed: true });
   }
   return { before: left, after: right, truncated: false };
+}
+
+/** Bounded list of positive IDs kept on this device (newest last). */
+export const validIdList =
+  (max: number) =>
+  (value: unknown): value is number[] =>
+    Array.isArray(value) &&
+    value.length <= max &&
+    value.every((n) => Number.isSafeInteger(n) && n > 0);
+export const remember = (list: number[], id: number, max: number) =>
+  [...list.filter((n) => n !== id), id].slice(-max);
+/** Splits text around case-insensitive matches of a query for safe highlighting. */
+export function highlight(
+  text: string,
+  query: string,
+): { text: string; match: boolean }[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [{ text, match: false }];
+  const haystack = text.toLocaleLowerCase();
+  // Case folding can change string length; fall back to no highlighting then.
+  if (haystack.length !== text.length) return [{ text, match: false }];
+  const parts: { text: string; match: boolean }[] = [];
+  let index = 0;
+  for (;;) {
+    const found = haystack.indexOf(needle, index);
+    if (found < 0 || parts.length > 40) break;
+    if (found > index) parts.push({ text: text.slice(index, found), match: false });
+    parts.push({ text: text.slice(found, found + needle.length), match: true });
+    index = found + needle.length;
+  }
+  if (index < text.length) parts.push({ text: text.slice(index), match: false });
+  return parts.length ? parts : [{ text, match: false }];
 }

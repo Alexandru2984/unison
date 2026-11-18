@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -8,71 +6,104 @@ import {
   useState,
   type FormEvent,
 } from "react";
+import BottomNav, { type NavTarget } from "./components/BottomNav";
+import Composer from "./components/Composer";
+import Discover from "./components/Discover";
+import GraphView from "./components/GraphView";
+import Header from "./components/Header";
+import HelpDialog from "./components/HelpDialog";
 import Icon from "./components/Icon";
+import IdeaList from "./components/IdeaList";
+import Inspector from "./components/Inspector";
+import Library, { type Scope } from "./components/Library";
 import ReportDialog from "./components/ReportDialog";
+import { fetchRandom, waterIdea } from "./lib/api";
+import { ideaCard } from "./lib/card";
+import {
+  detectLanguage,
+  isLang,
+  localizeError,
+  translator,
+  type Lang,
+} from "./lib/i18n";
 import {
   apiError,
   download,
   exportMarkdown,
   isIdea,
   mergeIdeas,
-  mutationName,
   mutations,
   readStorage,
+  remember,
   storeLocal,
-  wordCount,
-  wordDiff,
+  validIdList,
   type Idea,
   type Mutation,
 } from "./lib/ideas";
+import { ideaLabel, ruleName, shortId } from "./lib/rules";
+import { I18nContext } from "./lib/useI18n";
 import { useWorkspace } from "./lib/useWorkspace";
 import "./App.css";
 
-const IdeaGraph = lazy(() => import("./components/IdeaGraph"));
-const starters = [
-  {
-    category: "Community",
-    text: "Turn empty city rooftops into shared neighborhood gardens.",
-  },
-  {
-    category: "Learning",
-    text: "A library where people borrow skills instead of books.",
-  },
-  {
-    category: "Climate",
-    text: "Make repairing everyday objects easier than replacing them.",
-  },
-  {
-    category: "Technology",
-    text: "Build a calmer internet that rewards curiosity and collaboration.",
-  },
-  {
-    category: "Creativity",
-    text: "A museum of unfinished ideas that anyone can continue.",
-  },
-  {
-    category: "Everyday life",
-    text: "Create tiny adventures for people on their daily commute.",
-  },
-];
-const validBookmarks = (x: unknown): x is number[] =>
-  Array.isArray(x) &&
-  x.length <= 100 &&
-  x.every((n) => Number.isSafeInteger(n) && n > 0);
+type BoardView = "graph" | "list";
+interface Watered {
+  day: string;
+  ids: number[];
+}
+const MAX_SAVED = 100;
 const validDraft = (x: unknown): x is string =>
   typeof x === "string" && x.length <= 2000;
 const validTheme = (x: unknown): x is string => x === "light" || x === "dark";
+const validFlag = (x: unknown): x is boolean => typeof x === "boolean";
+const validWatered = (x: unknown): x is Watered =>
+  !!x &&
+  typeof x === "object" &&
+  typeof (x as Watered).day === "string" &&
+  validIdList(500)((x as Watered).ids);
+const utcDay = () => new Date().toISOString().slice(0, 10);
+const typing = (target: EventTarget | null) =>
+  target instanceof HTMLElement &&
+  (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+    target.isContentEditable);
+const haptic = () => {
+  try {
+    navigator.vibrate?.(12);
+  } catch {
+    /* Vibration is optional. */
+  }
+};
+// App shortcuts (manifest) open a view or the composer directly.
+const launch = new URLSearchParams(location.search);
 function hashId() {
   const match = location.hash.match(/^#idea-([1-9]\d{0,9})$/);
   return match ? Number(match[1]) : null;
 }
 
 export default function App() {
+  const [lang, setLang] = useState<Lang>(() =>
+    readStorage(
+      "idea-evolution:lang",
+      detectLanguage(navigator.languages ?? [navigator.language]),
+      isLang,
+    ),
+  );
+  const t = useMemo(() => translator(lang), [lang]);
+  const i18n = useMemo(() => ({ lang, t }), [lang, t]);
   const [draft, setDraft] = useState(() =>
     readStorage("idea-evolution:draft", "", validDraft),
   );
   const [bookmarks, setBookmarks] = useState<number[]>(() =>
-    readStorage("idea-evolution:bookmarks", [], validBookmarks),
+    readStorage("idea-evolution:bookmarks", [], validIdList(MAX_SAVED)),
+  );
+  const [mine, setMine] = useState<number[]>(() =>
+    readStorage("idea-evolution:mine", [], validIdList(MAX_SAVED)),
+  );
+  const [today] = useState(utcDay);
+  const [watered, setWatered] = useState<Watered>(() =>
+    readStorage("idea-evolution:watered", { day: "", ids: [] }, validWatered),
+  );
+  const [onboarded, setOnboarded] = useState(() =>
+    readStorage("idea-evolution:onboarded", false, validFlag),
   );
   const [theme, setTheme] = useState(() =>
     readStorage(
@@ -81,16 +112,19 @@ export default function App() {
       validTheme,
     ),
   );
-  const [view, setView] = useState<"graph" | "list">(() =>
+  const [boardView, setBoardView] = useState<BoardView>(() =>
     innerWidth < 720 ? "list" : "graph",
   );
+  const [discovering, setDiscovering] = useState(
+    () => launch.get("view") === "discover",
+  );
+  const view = discovering ? "discover" : boardView;
   const [search, setSearch] = useState(""),
     [debouncedSearch, setDebouncedSearch] = useState("");
   const [mutation, setMutation] = useState(""),
     [root, setRoot] = useState(""),
-    [savedOnly, setSavedOnly] = useState(false);
-  const [horizontal, setHorizontal] = useState(false),
-    [focusPath, setFocusPath] = useState(false);
+    [scope, setScope] = useState<Scope>("all");
+  const [focusPath, setFocusPath] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(hashId);
   const [selectedSnapshot, setSelectedSnapshot] = useState<{
     idea: Idea;
@@ -103,11 +137,16 @@ export default function App() {
   }>({ id: null, ideas: [], epoch: 0 });
   const [lineageError, setLineageError] = useState("");
   const [submitting, setSubmitting] = useState<Mutation | null>(null),
+    [watering, setWatering] = useState<number | null>(null),
+    [surprising, setSurprising] = useState(false),
     [error, setError] = useState(""),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [fresh, setFresh] = useState<number | null>(null);
   const [branchDraft, setBranchDraft] = useState(false),
     [inspectorTab, setInspectorTab] = useState<"detail" | "compare">("detail");
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(
+    () => launch.get("action") === "plant",
+  );
   const [reportTarget, setReportTarget] = useState<number | null>(null);
   const [storageAvailable] = useState(() => {
     try {
@@ -128,8 +167,8 @@ export default function App() {
     q: debouncedSearch,
     mutation,
     root,
-    saved: savedOnly,
-    bookmarks,
+    ids: scope === "saved" ? bookmarks : scope === "mine" ? mine : null,
+    leaves: scope === "leaves",
   });
   const lineage = useMemo(
     () =>
@@ -150,9 +189,25 @@ export default function App() {
     ? (lineage.find((i) => i.id === selected.parent_id) ??
       board.ideas.find((i) => i.id === selected.parent_id))
     : undefined;
-  const children = selected
-    ? board.ideas.filter((i) => i.parent_id === selected.id)
-    : [];
+  const childCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const idea of board.ideas)
+      if (idea.parent_id !== null)
+        counts.set(idea.parent_id, (counts.get(idea.parent_id) ?? 0) + 1);
+    return counts;
+  }, [board.ideas]);
+  // The server counts every visible branch; loaded ones may be newer.
+  const branches = useCallback(
+    (idea: Idea) => Math.max(idea.children ?? 0, childCounts.get(idea.id) ?? 0),
+    [childCounts],
+  );
+  const children = useMemo(
+    () =>
+      selected ? board.ideas.filter((i) => i.parent_id === selected.id) : [],
+    [board.ideas, selected],
+  );
+  const wateredToday = watered.day === today ? watered.ids : [];
+  const waterTotal = (idea: Idea) => board.water[idea.id] ?? idea.water ?? 0;
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 280);
@@ -166,16 +221,38 @@ export default function App() {
     storeLocal("idea-evolution:theme", theme);
   }, [theme]);
   useEffect(() => {
+    document.documentElement.lang = lang;
+    document.title = t("meta.title");
+    document
+      .querySelector('meta[name="description"]')
+      ?.setAttribute("content", t("meta.description"));
+    storeLocal("idea-evolution:lang", lang);
+  }, [lang, t]);
+  useEffect(() => {
     storeLocal("idea-evolution:draft", draft);
   }, [draft]);
   useEffect(() => {
     storeLocal("idea-evolution:bookmarks", bookmarks);
   }, [bookmarks]);
   useEffect(() => {
+    storeLocal("idea-evolution:mine", mine);
+  }, [mine]);
+  useEffect(() => {
+    storeLocal("idea-evolution:watered", watered);
+  }, [watered]);
+  useEffect(() => {
+    if (onboarded) storeLocal("idea-evolution:onboarded", true);
+  }, [onboarded]);
+  useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(""), 4500);
     return () => clearTimeout(timer);
   }, [notice]);
+  useEffect(() => {
+    if (fresh === null) return;
+    const timer = setTimeout(() => setFresh(null), 2400);
+    return () => clearTimeout(timer);
+  }, [fresh]);
   useEffect(() => {
     const onHash = () => setSelectedId(hashId());
     window.addEventListener("hashchange", onHash);
@@ -189,7 +266,7 @@ export default function App() {
         if (!response.ok) throw new Error(await apiError(response));
         const data: unknown = await response.json();
         if (!Array.isArray(data) || !data.every(isIdea))
-          throw new Error("The idea could not be read.");
+          throw new Error("The server returned an unexpected response.");
         if (!controller.signal.aborted) {
           setLineageState({
             id: selectedId,
@@ -202,9 +279,7 @@ export default function App() {
       .catch((reason) => {
         if (!controller.signal.aborted)
           setLineageError(
-            reason instanceof Error
-              ? reason.message
-              : "Could not load this idea.",
+            reason instanceof Error ? reason.message : "Could not load this idea.",
           );
       });
     return () => controller.abort();
@@ -218,17 +293,23 @@ export default function App() {
       setBranchDraft(false);
       setInspectorTab("detail");
       history.replaceState(null, "", `#idea-${idea.id}`);
-      if (innerWidth < 720)
-        requestAnimationFrame(() =>
-          document.querySelector(".inspector.has-selection")?.scrollIntoView({
-            behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
-              ? "instant"
-              : "smooth",
-            block: "start",
-          }),
-        );
     },
     [board.contentEpoch],
+  );
+  const openId = useCallback(
+    (id: number) => {
+      const known =
+        board.ideas.find((i) => i.id === id) ??
+        lineage.find((i) => i.id === id);
+      if (known) return selectIdea(known);
+      setSelectedId(id);
+      setSelectedSnapshot(null);
+      setLineageError("");
+      setBranchDraft(false);
+      setInspectorTab("detail");
+      history.replaceState(null, "", `#idea-${id}`);
+    },
+    [board.ideas, lineage, selectIdea],
   );
   const clearSelection = useCallback(() => {
     setSelectedId(null);
@@ -238,24 +319,22 @@ export default function App() {
   }, []);
   const toggleBookmark = useCallback(
     (idea: Idea) => {
+      if (!bookmarks.includes(idea.id) && bookmarks.length >= MAX_SAVED)
+        return setNotice(t("notice.saveLimit"));
       setBookmarks((previous) =>
         previous.includes(idea.id)
           ? previous.filter((id) => id !== idea.id)
-          : previous.length < 100
-            ? [...previous, idea.id]
-            : previous,
+          : [...previous, idea.id],
       );
-      if (!bookmarks.includes(idea.id) && bookmarks.length >= 100)
-        setNotice("You can save up to 100 ideas on this device.");
     },
-    [bookmarks],
+    [bookmarks, t],
   );
   const resetFilters = () => {
     setSearch("");
     setDebouncedSearch("");
     setMutation("");
     setRoot("");
-    setSavedOnly(false);
+    setScope("all");
     setFocusPath(false);
   };
   const focusComposer = () =>
@@ -273,31 +352,75 @@ export default function App() {
     setLibraryOpen(true);
     focusComposer();
   };
+  const plantText = (text: string) => {
+    setDraft(text);
+    startSeed();
+  };
+  const chooseScope = (next: Scope) => {
+    setScope(next);
+    setRoot("");
+    setFocusPath(false);
+    setDiscovering(false);
+    setLibraryOpen(false);
+  };
+  const surprise = useCallback(async () => {
+    if (surprising) return;
+    setSurprising(true);
+    try {
+      const idea = await fetchRandom(lang);
+      selectIdea(idea);
+      setNotice(t("notice.random"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("error.idea"));
+    } finally {
+      setSurprising(false);
+    }
+  }, [surprising, lang, selectIdea, t]);
+
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
-      if (
-        event.target instanceof HTMLElement &&
-        (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName) ||
-          event.target.isContentEditable)
-      )
-        return;
-      if (event.ctrlKey || event.metaKey || event.altKey || help.current?.open)
-        return;
-      if (event.key === "/") {
+      if (typing(event.target)) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (document.querySelector("dialog[open]")) return;
+      const key = event.key;
+      if (key === "/") {
         event.preventDefault();
-        searchInput.current?.focus();
-      }
-      if (event.key.toLowerCase() === "n") {
+        setDiscovering(false);
+        requestAnimationFrame(() => searchInput.current?.focus());
+      } else if (key.toLowerCase() === "n") {
         event.preventDefault();
         setLibraryOpen(true);
         setBranchDraft(false);
         requestAnimationFrame(() => composer.current?.focus());
+      } else if (key.toLowerCase() === "r") {
+        event.preventDefault();
+        void surprise();
+      } else if (key === "Escape") {
+        setLibraryOpen(false);
+        clearSelection();
+      } else if (selected && key.startsWith("Arrow")) {
+        // Walk the tree: up to the parent, down to a branch, sideways to siblings.
+        let target: number | null | undefined = null;
+        if (key === "ArrowUp") target = selected.parent_id;
+        else if (key === "ArrowDown")
+          target = board.ideas.find((i) => i.parent_id === selected.id)?.id;
+        else {
+          const siblings = board.ideas.filter(
+            (i) => i.parent_id === selected.parent_id,
+          );
+          const index = siblings.findIndex((i) => i.id === selected.id);
+          const step = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : 0;
+          if (index >= 0 && step) target = siblings[index + step]?.id;
+        }
+        if (target) {
+          event.preventDefault();
+          openId(target);
+        }
       }
-      if (event.key === "Escape") clearSelection();
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [clearSelection]);
+  }, [clearSelection, surprise, selected, board.ideas, openId]);
 
   async function submit(operation: Mutation, event?: FormEvent) {
     event?.preventDefault();
@@ -332,35 +455,39 @@ export default function App() {
         body,
         signal: AbortSignal.timeout(15_000),
       });
-      if (!response.ok) throw new Error(await apiError(response));
+      if (!response.ok) throw new Error(await apiError(response, lang));
       const idea: unknown = await response.json();
-      if (!isIdea(idea))
-        throw new Error(
-          "The response could not be read. Retry to check your submission.",
-        );
+      if (!isIdea(idea)) throw new Error(t("error.unreadable"));
       pendingRequest.current = null;
       const duplicate = response.headers.get("X-Idea-Duplicate") === "true";
       if (operation === "base") {
         setDraft("");
         resetFilters();
+        setDiscovering(false);
       }
+      if (!duplicate) {
+        setMine((previous) => remember(previous, idea.id, MAX_SAVED));
+        setFresh(idea.id);
+        haptic();
+      }
+      setOnboarded(true);
       board.upsert(idea);
       selectIdea(idea);
       setNotice(
         duplicate
-          ? "This idea already grows here — we opened it for you."
+          ? t("notice.duplicate")
           : operation === "base"
-            ? "Your idea is planted. Let it grow."
-            : `${mutationName(operation)} complete. A new branch is ready.`,
+            ? t("notice.planted")
+            : t("notice.branched", { rule: ruleName(t, operation) }),
       );
       setLibraryOpen(false);
     } catch (reason) {
       setError(
         reason instanceof Error
           ? reason.name === "TimeoutError"
-            ? "The server took too long. Retry your action to check the same submission; your draft is still here."
+            ? t("error.timeout")
             : reason.message
-          : "Unable to publish. Your draft is still here.",
+          : t("error.publish"),
       );
     } finally {
       submitLock.current = false;
@@ -373,9 +500,57 @@ export default function App() {
       await navigator.clipboard.writeText(text);
       setNotice(message);
     } catch {
-      setError(
-        "Clipboard access is unavailable. You can select and copy the text directly.",
+      setError(t("error.clipboard"));
+    }
+  }
+  async function share(idea: Idea) {
+    const url = `${location.origin}/i/${idea.id}`;
+    if (typeof navigator.share === "function") {
+      try {
+        await navigator.share({ title: "Idea Evolution", text: t("share.text"), url });
+        return;
+      } catch (reason) {
+        if (reason instanceof DOMException && reason.name === "AbortError")
+          return;
+      }
+    }
+    await copyText(url, t("notice.linkCopied"));
+  }
+  async function card(idea: Idea) {
+    try {
+      const image = await ideaCard(
+        idea,
+        {
+          tag: ideaLabel(t, idea),
+          footer: t("card.footer"),
+          meta: `${shortId(idea.id)} · ${t("idea.depth")} ${idea.depth} · ${t("idea.waterCount", { n: waterTotal(idea) })}`,
+        },
+        theme === "dark",
       );
+      download(`idea-${idea.id}.png`, image, "image/png");
+      setNotice(t("notice.card"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("error.publish"));
+    }
+  }
+  async function water(idea: Idea) {
+    if (watering !== null) return;
+    setWatering(idea.id);
+    try {
+      const result = await waterIdea(idea.id, lang);
+      board.setWater(idea.id, result.water);
+      setWatered((previous) => ({
+        day: today,
+        ids: remember(previous.day === today ? previous.ids : [], idea.id, 500),
+      }));
+      if (result.counted) {
+        setNotice(t("notice.watered"));
+        haptic();
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("error.publish"));
+    } finally {
+      setWatering(null);
     }
   }
   function exportIdeas(format: "json" | "md", items = board.ideas) {
@@ -404,8 +579,20 @@ export default function App() {
         "text/markdown;charset=utf-8",
       );
     setNotice(
-      `Exported ${items.length} loaded ${items.length === 1 ? "idea" : "ideas"}.`,
+      items.length === 1
+        ? t("export.doneOne")
+        : t("export.done", { n: items.length }),
     );
+  }
+  function navigate(target: NavTarget) {
+    if (target === "plant") return startSeed();
+    setLibraryOpen(false);
+    if (target === "discover") return setDiscovering(true);
+    setDiscovering(false);
+    if (target === "saved") {
+      setScope("saved");
+      setRoot("");
+    } else if (scope === "saved") setScope("all");
   }
 
   const graphIdeas = useMemo(() => {
@@ -422,951 +609,453 @@ export default function App() {
       board.ideas.filter((i) => included.has(i.id)),
     ).slice(0, 160);
   }, [board.ideas, lineage, selected, focusPath]);
-  const diff = useMemo(
-    () =>
-      parent && selected ? wordDiff(parent.content, selected.content) : null,
-    [parent, selected],
-  );
   const activeFilters = !!(
     search ||
     mutation ||
     root ||
-    savedOnly ||
+    scope !== "all" ||
     focusPath
   );
+  const shownError = error || board.error;
+  const discoverVersion = `${board.contentEpoch}:${board.stats?.total ?? ""}:${board.stats?.water ?? ""}`;
 
   return (
-    <div className="app-shell">
-      <a className="skip-link" href="#workspace">
-        Skip to workspace
-      </a>
-      <header className="topbar">
-        <a className="brand" href="/">
-          <span className="brand-mark">
-            <Icon name="graph" size={23} />
-          </span>
-          <span>
-            idea<span className="brand-light">evolution</span>
-            <small>THE POSSIBILITY LAB</small>
-          </span>
+    <I18nContext.Provider value={i18n}>
+      <div className={`app-shell view-${view}`}>
+        <a className="skip-link" href="#workspace">
+          {t("skip")}
         </a>
-        <div className="header-center">
-          <span className="public-dot" /> Community workspace{" "}
-          <span className="pill">Public</span>
-        </div>
-        <div className="top-actions">
-          <button
-            className="icon-button"
-            onClick={() => help.current?.showModal()}
-            aria-label="How it works"
+        <Header
+          theme={theme}
+          onToggleTheme={() => setTheme((v) => (v === "light" ? "dark" : "light"))}
+          onToggleLanguage={() => setLang((v) => (v === "en" ? "ro" : "en"))}
+          onHelp={() => help.current?.showModal()}
+          onNewIdea={startSeed}
+        />
+        <div className="workspace-shell">
+          <Library
+            open={libraryOpen}
+            scope={scope}
+            root={root}
+            counts={{
+              all: board.stats?.total,
+              saved: bookmarks.length,
+              mine: mine.length,
+            }}
+            seeds={board.seeds}
+            seedTotal={board.stats?.seeds}
+            onClose={() => setLibraryOpen(false)}
+            onScope={chooseScope}
+            onSeed={(idea) => {
+              setRoot(String(idea.id));
+              setScope("all");
+              setFocusPath(false);
+              setDiscovering(false);
+              selectIdea(idea);
+              setLibraryOpen(false);
+            }}
           >
-            <Icon name="help" />
-          </button>
-          <button
-            className="icon-button"
-            onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-            aria-label={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
-          >
-            <Icon name={theme === "light" ? "moon" : "sun"} />
-          </button>
-          <button className="button primary new-idea-top" onClick={startSeed}>
-            <Icon name="plus" /> New idea
-          </button>
-        </div>
-      </header>
-      <div className="workspace-shell">
-        <aside
-          className={`library ${libraryOpen ? "mobile-open" : ""}`}
-          aria-label="Idea library"
-        >
-          <div className="library-title">
-            <span className="eyebrow">YOUR EXPLORER</span>
-            <button
-              className="icon-button mobile-close"
-              onClick={() => setLibraryOpen(false)}
-              aria-label="Close library"
-            >
-              <Icon name="close" />
-            </button>
-          </div>
-          <nav className="library-nav" aria-label="Workspace filters">
-            <button
-              className={!savedOnly && !root ? "active" : ""}
-              onClick={resetFilters}
-            >
-              <Icon name="graph" />
-              <span>All ideas</span>
-              <span className="count">{board.stats?.total ?? "—"}</span>
-            </button>
-            <button
-              className={savedOnly ? "active" : ""}
-              onClick={() => {
-                setSavedOnly(true);
-                setRoot("");
-                setFocusPath(false);
-              }}
-            >
-              <Icon name="star" />
-              <span>Saved on this device</span>
-              <span className="count">{bookmarks.length}</span>
-            </button>
-          </nav>
-          <div className="seed-browser">
-            <div className="section-label">
-              <span>RECENT SEED IDEAS</span>
-              <span>{board.stats?.seeds ?? "—"}</span>
-            </div>
-            <div className="seed-list">
-              {board.seeds
-                .slice()
-                .reverse()
-                .map((idea) => (
-                  <button
-                    key={idea.id}
-                    className={root === String(idea.id) ? "active" : ""}
-                    onClick={() => {
-                      setRoot(String(idea.id));
-                      setSavedOnly(false);
-                      setFocusPath(false);
-                      selectIdea(idea);
-                      setLibraryOpen(false);
-                    }}
-                  >
-                    <span className="seed-dot" />
-                    <span>{idea.content}</span>
-                    <Icon name="chevron" size={13} />
-                  </button>
-                ))}
-              {!board.seeds.length && (
-                <p className="muted small">
-                  Your next idea could start something.
-                </p>
-              )}
-            </div>
-          </div>
-          <form
-            className="composer"
-            onSubmit={(event) => void submit("base", event)}
-          >
-            <div className="composer-heading">
-              <span className="composer-icon">
-                <Icon name="spark" />
-              </span>
-              <div>
-                <h2>
-                  {branchDraft && selected
-                    ? "A different direction"
-                    : "Plant a new idea"}
-                </h2>
-                <p>
-                  {branchDraft && selected
-                    ? `Branching from #${selected.id}`
-                    : "A small thought. A world of possibilities."}
-                </p>
-              </div>
-            </div>
-            <label className="sr-only" htmlFor="idea-draft">
-              Your new idea
-            </label>
-            <textarea
-              id="idea-draft"
-              ref={composer}
-              value={draft}
-              maxLength={2000}
-              rows={4}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="What if we could…"
-              onKeyDown={(event) => {
-                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
+            <Composer
+              draft={draft}
+              onDraft={setDraft}
+              branchFrom={branchDraft && selected ? selected.id : null}
+              planting={submitting === "base"}
+              disabled={submitting !== null}
+              storageAvailable={storageAvailable}
+              composerRef={composer}
+              onSubmit={(event) => void submit("base", event)}
+              onCancelBranch={() => setBranchDraft(false)}
+              onStarter={(text) => {
+                setDraft(text);
+                setBranchDraft(false);
+                focusComposer();
               }}
             />
-            <div className="composer-meta">
-              <span>
-                {storageAvailable
-                  ? "Draft stays on this device"
-                  : "Storage unavailable; keep this tab open"}
-              </span>
-              <span>{draft.length}/2000</span>
-            </div>
-            <button
-              className="button primary full"
-              type="submit"
-              disabled={!draft.trim() || submitting !== null}
-            >
-              {submitting === "base" ? (
-                <>
-                  <span className="spinner" /> Planting…
-                </>
-              ) : (
-                <>
-                  Plant idea <Icon name="arrow" size={17} />
-                </>
-              )}
-            </button>
-            {branchDraft && (
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => setBranchDraft(false)}
-              >
-                Start a separate seed instead
-              </button>
-            )}
-            <details className="composer-starters">
-              <summary>Try a starting point</summary>
-              {starters.map((starter) => (
+          </Library>
+          <main id="workspace" className="workspace" tabIndex={-1}>
+            <section className="workspace-intro">
+              <div>
+                <div className="eyebrow">{t("intro.eyebrow")}</div>
+                <h1>
+                  {t("intro.title")}
+                  <span>.</span>
+                </h1>
+                <p>{t("intro.lead")}</p>
+              </div>
+              <dl className="workspace-stats" aria-label={t("stats.label")}>
+                <div>
+                  <dt>{t("stats.ideas")}</dt>
+                  <dd>{board.stats?.total ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt>{t("stats.seeds")}</dt>
+                  <dd>{board.stats?.seeds ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt>{t("stats.depth")}</dt>
+                  <dd>{board.stats?.max_depth ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt>{t("stats.water")}</dt>
+                  <dd>{board.stats?.water ?? "—"}</dd>
+                </div>
+              </dl>
+            </section>
+            {!onboarded && (
+              <section className="onboarding" aria-label={t("onboarding.label")}>
+                <span className="onboarding-icon">
+                  <Icon name="spark" size={18} />
+                </span>
+                <p>{t("onboarding.text")}</p>
                 <button
-                  type="button"
-                  key={starter.category}
-                  onClick={() => {
-                    setDraft(starter.text);
-                    setBranchDraft(false);
-                    focusComposer();
+                  className="button subtle"
+                  onClick={() => setOnboarded(true)}
+                >
+                  {t("onboarding.dismiss")}
+                </button>
+              </section>
+            )}
+            <div className="workspace-toolbar">
+              <div className="search-box">
+                <Icon name="search" size={17} />
+                <input
+                  ref={searchInput}
+                  value={search}
+                  maxLength={200}
+                  inputMode="search"
+                  enterKeyHint="search"
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setDiscovering(false);
+                  }}
+                  placeholder={t("search.placeholder")}
+                  aria-label={t("search.label")}
+                />
+                {search ? (
+                  <button
+                    className="icon-button tiny"
+                    onClick={() => setSearch("")}
+                    aria-label={t("search.clear")}
+                  >
+                    <Icon name="close" size={14} />
+                  </button>
+                ) : (
+                  <kbd>/</kbd>
+                )}
+              </div>
+              <div
+                className="view-switch"
+                role="group"
+                aria-label={t("view.label")}
+              >
+                {(["graph", "list"] as const).map((item) => (
+                  <button
+                    key={item}
+                    aria-pressed={view === item}
+                    onClick={() => {
+                      setBoardView(item);
+                      setDiscovering(false);
+                    }}
+                  >
+                    <Icon name={item} size={16} />
+                    <span>{t(`view.${item}`)}</span>
+                  </button>
+                ))}
+                <button
+                  aria-pressed={view === "discover"}
+                  onClick={() => setDiscovering(true)}
+                >
+                  <Icon name="compass" size={16} />
+                  <span>{t("view.discover")}</span>
+                </button>
+              </div>
+              <details className="export-menu">
+                <summary className="icon-button" aria-label={t("export.label")}>
+                  <Icon name="download" />
+                </summary>
+                <div>
+                  <span>{t("export.heading")}</span>
+                  <button
+                    disabled={!board.ideas.length}
+                    onClick={() => exportIdeas("json")}
+                  >
+                    {t("export.json")}
+                  </button>
+                  <button
+                    disabled={!board.ideas.length}
+                    onClick={() => exportIdeas("md")}
+                  >
+                    {t("export.md")}
+                  </button>
+                </div>
+              </details>
+            </div>
+            <div className="filterbar">
+              <button
+                className="mobile-library-toggle button subtle"
+                aria-expanded={libraryOpen}
+                onClick={() => setLibraryOpen(!libraryOpen)}
+              >
+                <Icon name="plus" size={15} /> {t("filter.toggle")}
+              </button>
+              <label>
+                <span className="sr-only">{t("filter.label")}</span>
+                <select
+                  value={mutation}
+                  onChange={(event) => {
+                    setMutation(event.target.value);
+                    setDiscovering(false);
                   }}
                 >
-                  {starter.category}
-                  <Icon name="arrow" size={12} />
+                  <option value="">{t("filter.all")}</option>
+                  <option value="base">{t("filter.base")}</option>
+                  {mutations.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {ruleName(t, m.id)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {activeFilters && (
+                <button className="text-button" onClick={resetFilters}>
+                  {t("filter.clear")}
                 </button>
-              ))}
-            </details>
-            <p className="privacy-note">
-              <Icon name="lock" size={12} /> Published ideas are public. Keep
-              personal details and secrets out.
-            </p>
-          </form>
-          <div className="library-footer">
-            <span className="unison-mark">u</span>
-            <span>
-              Powered by <strong>Unison</strong>
-              <small>Pure functions. Reproducible results.</small>
-            </span>
-          </div>
-        </aside>
-        <main id="workspace" className="workspace" tabIndex={-1}>
-          <section className="workspace-intro">
-            <div>
-              <div className="eyebrow">
-                THINK IT. BRANCH IT. SEE WHAT GROWS.
-              </div>
-              <h1>
-                The idea garden<span>.</span>
-              </h1>
-              <p>Good ideas get better when they have room to evolve.</p>
+              )}
+              <span className="filter-count">
+                {board.loading
+                  ? t("status.finding")
+                  : t("status.loaded", {
+                      n: `${board.ideas.length}${board.hasMore ? "+" : ""}`,
+                    })}
+              </span>
+              <span className={`connection ${board.connection}`} role="status">
+                <span />
+                {board.connection === "live"
+                  ? t("status.live")
+                  : board.connection === "offline"
+                    ? t("status.offline")
+                    : t("status.reconnecting")}
+              </span>
             </div>
-            <div className="workspace-stats" aria-label="Workspace statistics">
-              <div>
-                <strong>{board.stats?.total ?? "—"}</strong>
-                <span>ideas planted</span>
-              </div>
-              <div>
-                <strong>{board.stats?.seeds ?? "—"}</strong>
-                <span>seed ideas</span>
-              </div>
-              <div>
-                <strong>{board.stats?.max_depth ?? "—"}</strong>
-                <span>deepest branch</span>
-              </div>
-            </div>
-          </section>
-          <div className="workspace-toolbar">
-            <div className="search-box">
-              <Icon name="search" size={17} />
-              <input
-                ref={searchInput}
-                value={search}
-                maxLength={200}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search the whole garden…"
-                aria-label="Search all ideas"
-              />
-              {search ? (
+            {shownError && (
+              <div className="error-banner" role="alert">
+                <span>{localizeError(lang, shownError)}</span>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setError("");
+                    board.refresh();
+                  }}
+                >
+                  {t("error.refresh")}
+                </button>
                 <button
                   className="icon-button tiny"
-                  onClick={() => setSearch("")}
-                  aria-label="Clear search"
+                  aria-label={t("error.dismiss")}
+                  onClick={() => setError("")}
                 >
-                  <Icon name="close" size={14} />
-                </button>
-              ) : (
-                <kbd>/</kbd>
-              )}
-            </div>
-            <div
-              className="view-switch"
-              role="group"
-              aria-label="Workspace view"
-            >
-              <button
-                aria-pressed={view === "graph"}
-                onClick={() => setView("graph")}
-              >
-                <Icon name="graph" size={16} />
-                <span>Graph</span>
-              </button>
-              <button
-                aria-pressed={view === "list"}
-                onClick={() => setView("list")}
-              >
-                <Icon name="list" size={16} />
-                <span>List</span>
-              </button>
-            </div>
-            <details className="export-menu">
-              <summary className="icon-button" aria-label="Export loaded ideas">
-                <Icon name="download" />
-              </summary>
-              <div>
-                <span>EXPORT LOADED IDEAS</span>
-                <button
-                  disabled={!board.ideas.length}
-                  onClick={() => exportIdeas("json")}
-                >
-                  Download JSON
-                </button>
-                <button
-                  disabled={!board.ideas.length}
-                  onClick={() => exportIdeas("md")}
-                >
-                  Download Markdown
+                  <Icon name="close" size={15} />
                 </button>
               </div>
-            </details>
-          </div>
-          <div className="filterbar">
-            <button
-              className="mobile-library-toggle button subtle"
-              onClick={() => setLibraryOpen(!libraryOpen)}
-            >
-              <Icon name="plus" size={15} /> Ideas & draft
-            </button>
-            <label>
-              <span className="sr-only">Filter by transformation</span>
-              <select
-                value={mutation}
-                onChange={(event) => setMutation(event.target.value)}
-              >
-                <option value="">All transformations</option>
-                <option value="base">Seeds & custom branches</option>
-                {mutations.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {activeFilters && (
-              <button className="text-button" onClick={resetFilters}>
-                Clear filters
-              </button>
             )}
-            <span className="filter-count">
-              {board.loading
-                ? "Finding ideas…"
-                : `${board.ideas.length}${board.hasMore ? "+" : ""} loaded`}
-            </span>
-            <span className={`connection ${board.connection}`} role="status">
-              <span />
-              {board.connection === "live"
-                ? "Live sync"
-                : board.connection === "offline"
-                  ? "Offline"
-                  : "Reconnecting"}
-            </span>
-          </div>
-          {(error || board.error) && (
-            <div className="error-banner" role="alert">
-              <span>{error || board.error}</span>
-              <button
-                className="text-button"
-                onClick={() => {
-                  setError("");
-                  board.refresh();
-                }}
-              >
-                Refresh board
-              </button>
-              <button
-                className="icon-button tiny"
-                aria-label="Dismiss error"
-                onClick={() => setError("")}
-              >
-                <Icon name="close" size={15} />
-              </button>
-            </div>
-          )}
-          {board.connection === "offline" && (
-            <div className="offline-banner">
-              You’re offline. Your draft is safe on this device. Reconnect to
-              publish or sync ideas.
-            </div>
-          )}
-          <div
-            className={`canvas ${view === "list" ? "list-canvas" : ""}`}
-            aria-busy={board.loading}
-          >
-            {board.loading ? (
-              <div className="empty-state">
-                <span className="spinner" />
-                <p>Opening the garden…</p>
-              </div>
-            ) : board.ideas.length === 0 ? (
-              <div className="empty-state">
-                <span className="empty-icon">
-                  <Icon
-                    name={savedOnly ? "star" : search ? "search" : "spark"}
-                    size={32}
-                  />
-                </span>
-                <h2>
-                  {savedOnly
-                    ? "Keep the ideas that stay with you."
-                    : activeFilters
-                      ? "A little more room to explore."
-                      : "Something good starts with a thought."}
-                </h2>
-                <p>
-                  {savedOnly
-                    ? "Save an idea with the star. Your collection stays on this device."
-                    : activeFilters
-                      ? "No ideas match these filters. Try another word or clear the filters."
-                      : "Plant your first idea, then take it in a new direction."}
-                </p>
-                <button
-                  className="button primary"
-                  onClick={activeFilters ? resetFilters : startSeed}
-                >
-                  {activeFilters ? "Show all ideas" : "Plant the first idea"}
-                  <Icon name="arrow" size={16} />
-                </button>
-              </div>
-            ) : view === "graph" ? (
-              <Suspense
-                fallback={
-                  <div className="empty-state">
-                    <span className="spinner" />
-                    <p>Drawing the branches…</p>
-                  </div>
-                }
-              >
-                <IdeaGraph
+            {board.connection === "offline" && (
+              <div className="offline-banner">{t("error.offline")}</div>
+            )}
+            <div
+              className={`canvas ${view === "graph" ? "" : "list-canvas"}`}
+              aria-busy={view !== "discover" && board.loading}
+            >
+              {view === "discover" ? (
+                <Discover
+                  version={discoverVersion}
+                  stats={board.stats}
+                  water={board.water}
+                  surprising={surprising}
+                  onSelect={selectIdea}
+                  onPlant={plantText}
+                  onSurprise={() => void surprise()}
+                />
+              ) : board.loading ? (
+                <div className="empty-state">
+                  <span className="spinner" />
+                  <p>{t("loading.garden")}</p>
+                </div>
+              ) : board.ideas.length === 0 ? (
+                <div className="empty-state">
+                  <span className="empty-icon">
+                    <Icon
+                      name={
+                        scope === "saved"
+                          ? "star"
+                          : scope === "mine"
+                            ? "user"
+                            : search
+                              ? "search"
+                              : "spark"
+                      }
+                      size={32}
+                    />
+                  </span>
+                  <h2>
+                    {scope === "saved"
+                      ? t("empty.savedTitle")
+                      : scope === "mine"
+                        ? t("empty.mineTitle")
+                        : activeFilters
+                          ? t("empty.filterTitle")
+                          : t("empty.title")}
+                  </h2>
+                  <p>
+                    {scope === "saved"
+                      ? t("empty.savedText")
+                      : scope === "mine"
+                        ? t("empty.mineText")
+                        : activeFilters
+                          ? t("empty.filterText")
+                          : t("empty.text")}
+                  </p>
+                  <button
+                    className="button primary"
+                    onClick={activeFilters ? resetFilters : startSeed}
+                  >
+                    {activeFilters ? t("empty.showAll") : t("empty.plantFirst")}
+                    <Icon name="arrow" size={16} />
+                  </button>
+                </div>
+              ) : view === "graph" ? (
+                <GraphView
                   ideas={graphIdeas}
                   selectedId={selectedId}
                   bookmarks={bookmarks}
-                  horizontal={horizontal}
+                  water={board.water}
+                  branches={branches}
+                  fresh={fresh}
                   theme={theme}
+                  canFocus={!!selected}
+                  focusPath={focusPath}
+                  onFocusPath={() => setFocusPath((f) => !f)}
                   onSelect={selectIdea}
                   onBookmark={toggleBookmark}
                 />
-              </Suspense>
-            ) : (
-              <div className="idea-list">
-                {board.ideas
-                  .slice()
-                  .reverse()
-                  .map((idea) => (
-                    <article
-                      key={idea.id}
-                      className={`idea-list-card ${idea.id === selectedId ? "selected" : ""}`}
-                    >
-                      <button
-                        className="list-idea-content"
-                        onClick={() => selectIdea(idea)}
-                      >
-                        <div className="list-meta">
-                          <span className={`tag ${idea.mutation}`}>
-                            {idea.parent_id === null
-                              ? "Seed idea"
-                              : mutationName(idea.mutation)}
-                          </span>
-                          <span>
-                            #{String(idea.id).padStart(3, "0")} · depth{" "}
-                            {idea.depth}
-                          </span>
-                        </div>
-                        <p>{idea.content}</p>
-                        <span className="list-bottom">
-                          {idea.created_at
-                            ? new Date(idea.created_at).toLocaleDateString(
-                                undefined,
-                                { month: "short", day: "numeric" },
-                              )
-                            : "Earlier idea"}
-                          <span>
-                            Explore idea <Icon name="arrow" size={14} />
-                          </span>
-                        </span>
-                      </button>
-                      <button
-                        className={`icon-button list-save ${bookmarks.includes(idea.id) ? "is-saved" : ""}`}
-                        aria-label={`${bookmarks.includes(idea.id) ? "Unsave" : "Save"} idea ${idea.id}`}
-                        aria-pressed={bookmarks.includes(idea.id)}
-                        onClick={() => toggleBookmark(idea)}
-                      >
-                        <Icon name="star" size={17} />
-                      </button>
-                    </article>
-                  ))}
-              </div>
-            )}
-            {view === "graph" && board.ideas.length > 0 && (
-              <div className="canvas-tools">
-                <button
-                  className="canvas-chip"
-                  onClick={() => setHorizontal((h) => !h)}
-                >
-                  <Icon name="graph" size={14} />
-                  {horizontal ? "Horizontal" : "Vertical"}
-                </button>
-                {selected && (
-                  <button
-                    className={`canvas-chip ${focusPath ? "active" : ""}`}
-                    aria-pressed={focusPath}
-                    onClick={() => setFocusPath((f) => !f)}
-                  >
-                    <Icon name="focus" size={14} />
-                    {focusPath ? "Show all branches" : "Focus lineage"}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-          <footer className="canvas-footer">
-            <span>
-              {view === "graph"
-                ? "Scroll to zoom · drag the canvas to explore"
-                : "Select an idea to explore its next chapter"}
-              {view === "graph" && board.ideas.length > 160
-                ? " · Graph shows up to 160 nodes"
-                : ""}
-            </span>
-            {board.hasMore && (
-              <button
-                className="text-button"
-                disabled={board.moreBusy}
-                onClick={() => void board.loadMore()}
-              >
-                {board.moreBusy ? "Loading…" : "Load older ideas"}{" "}
-                <Icon name="chevron" size={13} />
-              </button>
-            )}
-            <span className="engine-label">
-              <span /> Deterministic by design
-            </span>
-          </footer>
-        </main>
-        <aside
-          className={`inspector ${selectedId !== null ? "has-selection" : ""}`}
-          aria-label="Idea details"
-        >
-          {selected ? (
-            <>
-              <div className="inspector-heading">
-                <span className="eyebrow">IDEA INSPECTOR</span>
-                <button
-                  className="icon-button"
-                  onClick={clearSelection}
-                  aria-label="Close idea details"
-                >
-                  <Icon name="close" size={17} />
-                </button>
-              </div>
-              <div className="selected-title">
-                <span className={`tag ${selected.mutation}`}>
-                  {selected.parent_id === null
-                    ? "Seed idea"
-                    : mutationName(selected.mutation)}
-                </span>
-                <span className="mono">
-                  #{String(selected.id).padStart(3, "0")}
-                </span>
-              </div>
-              <h2>A thought in progress.</h2>
-              <div
-                className="inspector-tabs"
-                role="group"
-                aria-label="Idea details view"
-              >
-                <button
-                  aria-pressed={inspectorTab === "detail"}
-                  onClick={() => setInspectorTab("detail")}
-                >
-                  Overview
-                </button>
-                <button
-                  aria-pressed={inspectorTab === "compare"}
-                  disabled={!parent}
-                  onClick={() => setInspectorTab("compare")}
-                >
-                  Compare to parent
-                </button>
-              </div>
-              {inspectorTab === "compare" && diff && parent ? (
-                <div className="comparison">
-                  <div>
-                    <span className="eyebrow">PARENT #{parent.id}</span>
-                    <p>
-                      {diff.before.map((token, i) =>
-                        token.changed ? (
-                          <del key={i}>{token.text}</del>
-                        ) : (
-                          token.text
-                        ),
-                      )}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="eyebrow">CURRENT #{selected.id}</span>
-                    <p>
-                      {diff.after.map((token, i) =>
-                        token.changed ? (
-                          <mark key={i}>{token.text}</mark>
-                        ) : (
-                          token.text
-                        ),
-                      )}
-                    </p>
-                  </div>
-                  {diff.truncated && (
-                    <p className="small muted">
-                      Full text shown; word highlighting is limited for longer
-                      ideas.
-                    </p>
-                  )}
-                  <p className="small muted">
-                    {wordCount(selected.content) - wordCount(parent.content) >=
-                    0
-                      ? "+"
-                      : ""}
-                    {wordCount(selected.content) - wordCount(parent.content)}{" "}
-                    words from parent
-                  </p>
-                </div>
               ) : (
-                <>
-                  <p className="selected-content">{selected.content}</p>
-                  <div className="idea-metrics">
-                    <span>
-                      <strong>{wordCount(selected.content)}</strong> words
-                    </span>
-                    <span>
-                      <strong>{selected.depth}</strong> depth
-                    </span>
-                    <span>
-                      <strong>{children.length}</strong> loaded branches
-                    </span>
-                  </div>
-                  <div className="detail-actions">
-                    <button
-                      className={`button subtle ${bookmarks.includes(selected.id) ? "is-saved" : ""}`}
-                      aria-pressed={bookmarks.includes(selected.id)}
-                      onClick={() => toggleBookmark(selected)}
-                    >
-                      <Icon name="star" size={15} />
-                      {bookmarks.includes(selected.id) ? "Saved" : "Save"}
-                    </button>
-                    <button
-                      className="icon-button"
-                      onClick={() =>
-                        void copyText(selected.content, "Idea copied.")
-                      }
-                      aria-label="Copy idea text"
-                    >
-                      <Icon name="copy" size={16} />
-                    </button>
-                    <button
-                      className="icon-button"
-                      onClick={() =>
-                        void copyText(
-                          `${location.origin}/#idea-${selected.id}`,
-                          "Link copied. Anyone with the link can view this public idea.",
-                        )
-                      }
-                      aria-label="Copy public idea link"
-                    >
-                      <Icon name="share" size={16} />
-                    </button>
-                  </div>
-                </>
+                <IdeaList
+                  ideas={board.ideas}
+                  selectedId={selectedId}
+                  bookmarks={bookmarks}
+                  water={board.water}
+                  branches={branches}
+                  query={debouncedSearch}
+                  fresh={fresh}
+                  hasMore={board.hasMore}
+                  moreBusy={board.moreBusy}
+                  onLoadMore={() => void board.loadMore()}
+                  onSelect={selectIdea}
+                  onBookmark={toggleBookmark}
+                />
               )}
-              <button
-                className="text-button report-link"
-                onClick={() => setReportTarget(selected.id)}
-              >
-                <Icon name="flag" size={14} /> Report this idea
-              </button>
-              {lineageError && (
-                <p className="small error-text" role="alert">
-                  {lineageError}
-                </p>
-              )}
-              <section className="transform-section">
-                <div className="section-label">
-                  <span>TAKE IT SOMEWHERE NEW</span>
-                  <Icon name="spark" size={14} />
-                </div>
-                <p className="small muted">
-                  Pick a rule. Unison creates a reproducible branch.
-                </p>
-                <div className="transforms">
-                  {mutations.map((m) => (
-                    <button
-                      key={m.id}
-                      className={`transform-button ${m.id}`}
-                      title={m.description}
-                      disabled={submitting !== null || selected.depth >= 32}
-                      onClick={() => void submit(m.id)}
-                    >
-                      <span className="transform-symbol">
-                        {submitting === m.id ? (
-                          <span className="spinner" />
-                        ) : (
-                          m.symbol
-                        )}
-                      </span>
-                      <span>
-                        <strong>{m.name}</strong>
-                        <small>{m.description}</small>
-                      </span>
-                      <Icon name="chevron" size={15} />
-                    </button>
-                  ))}
-                </div>
+            </div>
+            <footer className="canvas-footer">
+              <span>
+                {view === "graph"
+                  ? t("graph.hintGraph")
+                  : t("graph.hintList")}
+                {view === "graph" && board.ideas.length > 160
+                  ? t("graph.limit")
+                  : ""}
+              </span>
+              {board.hasMore && view !== "discover" && (
                 <button
-                  className="button subtle full custom-branch"
-                  disabled={submitting !== null || selected.depth >= 32}
-                  onClick={() => {
-                    setBranchDraft(true);
-                    setLibraryOpen(true);
-                    focusComposer();
-                  }}
+                  className="text-button"
+                  disabled={board.moreBusy}
+                  onClick={() => void board.loadMore()}
                 >
-                  <Icon name="branch" size={15} /> Write your own branch
+                  {board.moreBusy ? t("graph.loading") : t("graph.more")}{" "}
+                  <Icon name="chevron" size={13} />
                 </button>
-                {selected.depth >= 32 && (
-                  <p className="small muted">
-                    This branch reached its depth limit. Plant a new seed to
-                    continue.
-                  </p>
-                )}
-              </section>
-              {lineage.length > 1 && (
-                <section className="lineage-section">
-                  <div className="section-label">THE PATH HERE</div>
-                  <ol>
-                    {lineage.map((idea) => (
-                      <li key={idea.id}>
-                        <button
-                          className={idea.id === selected.id ? "current" : ""}
-                          onClick={() => selectIdea(idea)}
-                        >
-                          <span className={`lineage-dot ${idea.mutation}`} />
-                          <span>
-                            <strong>
-                              #{idea.id} ·{" "}
-                              {idea.parent_id === null
-                                ? "Seed idea"
-                                : mutationName(idea.mutation)}
-                            </strong>
-                            <small>{idea.content}</small>
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                  <button
-                    className="text-button"
-                    onClick={() => exportIdeas("md", lineage)}
-                  >
-                    <Icon name="download" size={14} /> Export this lineage
-                  </button>
-                </section>
               )}
-              {children.length > 0 && (
-                <section className="children-section">
-                  <div className="section-label">
-                    NEXT CHAPTERS · {children.length} LOADED
-                  </div>
-                  {children.slice(0, 10).map((child) => (
-                    <button
-                      key={child.id}
-                      className="child-link"
-                      onClick={() => selectIdea(child)}
-                    >
-                      <span>
-                        #{child.id} · {mutationName(child.mutation)}
-                      </span>
-                      <Icon name="arrow" size={14} />
-                    </button>
-                  ))}
-                </section>
-              )}
-            </>
-          ) : selectedId !== null ? (
-            <div className="inspector-welcome">
-              <Icon name="search" size={28} />
-              <h2>
-                {lineageError
-                  ? "This idea is out of reach."
-                  : "Opening this idea…"}
-              </h2>
-              <p>{lineageError || "Tracing its path through the garden."}</p>
-              <button className="button subtle" onClick={clearSelection}>
-                Back to exploring
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="inspector-heading">
-                <span className="eyebrow">
-                  A LITTLE CURIOSITY GOES A LONG WAY
-                </span>
-                <Icon name="spark" size={16} />
-              </div>
-              <div className="inspector-welcome">
-                <div className="garden-art" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                  <Icon name="spark" size={26} />
-                </div>
-                <span className="eyebrow">ONE THOUGHT. MANY DIRECTIONS.</span>
-                <h2>
-                  Where could your
-                  <br />
-                  next idea take you?
-                </h2>
-                <p>
-                  Select an idea in the garden to see its story, or plant
-                  something of your own.
-                </p>
-              </div>
-              <div className="how-steps">
-                <div>
-                  <span>01</span>
-                  <p>
-                    <strong>Plant a thought</strong>Start with a question or a
-                    possibility.
-                  </p>
-                </div>
-                <div>
-                  <span>02</span>
-                  <p>
-                    <strong>Explore a direction</strong>Expand, rephrase,
-                    amplify or synthesize.
-                  </p>
-                </div>
-                <div>
-                  <span>03</span>
-                  <p>
-                    <strong>Follow what grows</strong>Compare branches. Save
-                    what inspires you.
-                  </p>
-                </div>
-              </div>
-              <section className="starter-section">
-                <div className="section-label">NEED A STARTING POINT?</div>
-                {starters.map((starter) => (
-                  <button
-                    key={starter.category}
-                    onClick={() => {
-                      setDraft(starter.text);
-                      startSeed();
-                    }}
-                  >
-                    <span>
-                      <small>{starter.category}</small>
-                      <strong>{starter.text}</strong>
-                    </span>
-                    <Icon name="plus" size={16} />
-                  </button>
-                ))}
-              </section>
-              <p className="engine-note">
-                Four pure text transformations, computed by Unison. The same
-                input and rule produce the same output.
-              </p>
-            </>
-          )}
-        </aside>
-      </div>
-      <div className="toast-container" role="status" aria-live="polite">
-        {notice && (
-          <div className="toast">
-            <Icon name="check" size={17} />
-            {notice}
-          </div>
+              <span className="engine-label">
+                <span /> {t("graph.engine")}
+              </span>
+            </footer>
+          </main>
+          <Inspector
+            selectedId={selectedId}
+            selected={selected}
+            parent={parent}
+            lineage={lineage}
+            loadedChildren={children}
+            branchCount={selected ? branches(selected) : 0}
+            lineageError={lineageError ? localizeError(lang, lineageError) : ""}
+            saved={!!selected && bookmarks.includes(selected.id)}
+            watered={!!selected && wateredToday.includes(selected.id)}
+            waterTotal={selected ? waterTotal(selected) : 0}
+            watering={watering !== null}
+            submitting={submitting}
+            tab={inspectorTab}
+            epoch={board.contentEpoch}
+            onTab={setInspectorTab}
+            onTransform={(rule) => void submit(rule)}
+            onOpen={selectIdea}
+            onOpenId={openId}
+            onClose={clearSelection}
+            onBookmark={toggleBookmark}
+            onWater={(idea) => void water(idea)}
+            onCopy={(idea) => void copyText(idea.content, t("notice.copied"))}
+            onShare={(idea) => void share(idea)}
+            onCard={(idea) => void card(idea)}
+            onReport={setReportTarget}
+            onCustomBranch={() => {
+              setBranchDraft(true);
+              setLibraryOpen(true);
+              focusComposer();
+            }}
+            onExportLineage={() => exportIdeas("md", lineage)}
+            onStarter={plantText}
+          />
+        </div>
+        {libraryOpen && (
+          <div
+            className="sheet-backdrop library-backdrop"
+            aria-hidden="true"
+            onClick={() => setLibraryOpen(false)}
+          />
         )}
-      </div>
-      {reportTarget !== null && (
-        <ReportDialog
-          ideaId={reportTarget}
-          onClose={() => setReportTarget(null)}
+        {selectedId !== null && (
+          <div
+            className="sheet-backdrop inspector-backdrop"
+            aria-hidden="true"
+            onClick={clearSelection}
+          />
+        )}
+        <BottomNav
+          active={
+            libraryOpen
+              ? "plant"
+              : discovering
+                ? "discover"
+                : scope === "saved"
+                  ? "saved"
+                  : "garden"
+          }
+          savedCount={bookmarks.length}
+          onNavigate={navigate}
         />
-      )}
-      <dialog ref={help} className="help-dialog" aria-labelledby="help-title">
-        <div className="inspector-heading">
-          <span className="eyebrow">WELCOME TO THE POSSIBILITY LAB</span>
-          <button
-            className="icon-button"
-            aria-label="Close guide"
-            onClick={() => help.current?.close()}
-          >
-            <Icon name="close" />
-          </button>
-        </div>
-        <h2 id="help-title">Every idea is a starting point.</h2>
-        <p>
-          Plant an idea on the shared public board. Select it, choose a
-          transformation, and explore a new branch. Each rule runs as a pure
-          Unison function.
-        </p>
-        <div className="help-rules">
-          {mutations.map((m) => (
-            <div key={m.id}>
-              <strong>
-                {m.symbol} {m.name}
-              </strong>
-              <p>{m.description}</p>
+        <div className="toast-container" role="status" aria-live="polite">
+          {notice && (
+            <div className="toast">
+              <Icon name="check" size={17} />
+              {notice}
             </div>
-          ))}
+          )}
         </div>
-        <p>
-          Save favorites and recover drafts on this device. Search the entire
-          board, compare a branch with its parent, copy a public link, or export
-          the ideas you’ve loaded.
-        </p>
-        <div className="shortcut-list">
-          <span>
-            <kbd>/</kbd> Search
-          </span>
-          <span>
-            <kbd>N</kbd> New idea
-          </span>
-          <span>
-            <kbd>Esc</kbd> Clear selection
-          </span>
-          <span>
-            <kbd>Ctrl / ⌘ + Enter</kbd> Publish draft
-          </span>
-        </div>
-        <p className="privacy-note">
-          Everything you publish is public. Drafts and bookmarks are stored in
-          this browser. Clearing browser data removes them. Live updates
-          reconnect automatically; polling keeps the board current when live
-          sync is unavailable.
-        </p>
-        <button
-          className="button primary"
-          onClick={() => help.current?.close()}
-        >
-          Let’s explore <Icon name="arrow" size={16} />
-        </button>
-      </dialog>
-    </div>
+        {reportTarget !== null && (
+          <ReportDialog
+            ideaId={reportTarget}
+            onClose={() => setReportTarget(null)}
+          />
+        )}
+        <HelpDialog ref={help} />
+      </div>
+    </I18nContext.Provider>
   );
 }
