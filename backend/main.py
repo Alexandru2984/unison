@@ -25,6 +25,7 @@ from security import ApiSecurityMiddleware, RateLimiter, WriteBudget, client_key
 from moderation import ReportReason, board_revision, init_moderation, now
 from text_policy import PolicyError, clean_engine_text, clean_user_text, content_key
 from social import WaterLedger, activity, add_water, discover_ids, init_social, utc_day, water_total
+from share import create_share_router
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=PROJECT_DIR / '.env', override=False)
@@ -597,6 +598,9 @@ async def random_idea():
     if row is None:
         raise HTTPException(status_code=404, detail='The garden is empty')
     return dict(row)
+
+
+app.include_router(create_share_router(connect_db, PUBLIC_ORIGIN))
 
 
 @app.get('/api/mutations')

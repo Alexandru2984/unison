@@ -12,6 +12,15 @@ if base != 'http://127.0.0.1:18791':
     raise SystemExit('This write probe is restricted to the disposable candidate port')
 
 
+def fetch(path):
+    """Raw GET for server-rendered pages: (status, headers, text)."""
+    try:
+        with urlopen(Request(base + path), timeout=8) as response:
+            return response.status, response.headers, response.read().decode()
+    except HTTPError as error:
+        return error.code, error.headers, error.read().decode()
+
+
 def request(path, payload=None):
     data = None if payload is None else json.dumps(payload).encode()
     req = Request(base + path, data=data, headers={'Content-Type': 'application/json', 'Origin': base})
@@ -44,6 +53,13 @@ for rejected in [{'content': 'visit www.spam.example'}, {'content': 'x\u202ey'}]
     else:
         raise AssertionError('Text policy accepted an invalid idea')
 TOTAL = 1 + len(MUTATIONS)
+status, headers, page = fetch(f"/i/{seed['id']}")
+assert status == 200 and 'noindex' in headers['X-Robots-Tag'], 'A fresh idea page must not be indexed'
+assert 'Grădină 🌱 &quot;quotes&quot;' in page and f'href="/#idea-{seed["id"]}"' in page
+status, _, sitemap = fetch('/sitemap.xml')
+assert status == 200 and '<loc>' in sitemap and f"/i/{seed['id']}<" not in sitemap
+status, _, feed = fetch('/feed.xml')
+assert status == 200 and feed.count('<entry>') == 0 and '<feed xmlns="http://www.w3.org/2005/Atom">' in feed
 assert request(f"/api/idea/{seed['id']}/water", {})['counted'] is True
 assert request(f"/api/idea/{seed['id']}/water", {}) == {'idea_id': seed['id'], 'water': 1, 'counted': False}
 sections = request('/api/discover')
@@ -77,6 +93,7 @@ assert moderate('hide', str(seed['id']), '--reason', 'privacy')['affected'] == T
 assert request('/api/idea') == []
 assert request('/api/stats')['total'] == 0
 assert all(rows == [] for rows in request('/api/discover').values())
+assert fetch(f"/i/{result['id']}")[0] == 404, 'A hidden idea page was public'
 for path in [f"/api/idea/{seed['id']}", f"/api/idea/{result['id']}/lineage"]:
     try:
         request(path)
@@ -89,4 +106,5 @@ assert request('/api/stats')['total'] == TOTAL
 assert request('/api/stats')['board_revision'] == 2
 assert request(f"/api/idea/{seed['id']}")['content'] == seed['content']
 assert moderate('queue') == []
-print('Candidate smoke passed: real mutations, reports, private operator hide/restore, visibility and preservation')
+print('Candidate smoke passed: real mutations, previews, reactions, discovery, share pages, reports, '
+      'private operator hide/restore, visibility and preservation')

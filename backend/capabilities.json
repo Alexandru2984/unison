@@ -1,5 +1,5 @@
 {
   "schema": 2,
   "mutations": ["base", "expand", "rephrase", "mutate_keywords", "synthesize", "question", "twist", "headline", "flip"],
-  "features": ["moderation", "content_key", "previews", "water", "discover"]
+  "features": ["moderation", "content_key", "previews", "water", "discover", "share"]
 }
