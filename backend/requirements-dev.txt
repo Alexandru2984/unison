@@ -1,3 +1,8 @@
 -r requirements.txt
-httpx==0.28.1
+# Starlette 1.x's TestClient is built on httpx2.
+httpx2==2.16.2
 pip-audit==2.10.1
+# Regenerate requirements.lock after changing requirements.txt:
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url \
+#     --output-file requirements.lock requirements.txt
+pip-tools==7.7.0

@@ -8,7 +8,7 @@ if [[ "$project_dir" != /home/micu/unisonTrying ]]; then echo 'Review the fixed 
 git_repo() { GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$project_dir" -C "$project_dir" "$@"; }
 exec 9>/run/lock/unison-deploy.lock
 flock -n 9 || { echo 'Another Unison deployment is running.' >&2; exit 1; }
-for program in git python3 npm nginx systemctl install runuser setsid curl tar; do command -v "$program" >/dev/null; done
+for program in git python3 npm nginx systemctl install runuser setsid curl tar sha256sum; do command -v "$program" >/dev/null; done
 id unisonapp >/dev/null
 if [[ -n "$(git_repo status --porcelain)" ]]; then echo 'Commit or preserve working-tree changes before deployment.' >&2; exit 1; fi
 [[ -f /etc/nginx/conf.d/cloudflare-origin-guard.conf && -f /etc/nginx/conf.d/cloudflare-realip.conf ]]
@@ -18,6 +18,7 @@ revision="$(git_repo rev-parse HEAD)"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 site_root=/var/www/unison.micutu.com
 api_root=/opt/unison-backend
+runtime_root=/opt/unison-runtime
 backup_dir="/var/backups/unison-backend/$stamp"
 frontend_release="$site_root/releases/${revision:0:12}-$stamp"
 backend_release="$api_root/releases/${revision:0:12}-$stamp"
@@ -62,8 +63,8 @@ rollback() {
       esac
       if [[ -f "$backup_dir/$name" ]]; then install -m 0644 "$backup_dir/$name" "$destination"; else rm -f "$destination"; fi
     done
-    # Retain the hardened versioned service: its previous-release symlink is
-    # sufficient to restore code, even on the first migration from the checkout.
+    # Older releases may predate per-release runtimes: restore the unit that ran them.
+    if [[ -f "$backup_dir/service.unit" ]]; then install -m 0644 "$backup_dir/service.unit" /etc/systemd/system/unison-backend.service; fi
     systemctl daemon-reload
     if (( rollback_api_safe )); then systemctl restart unison-backend; else systemctl stop unison-backend; fi
     nginx -t && systemctl reload nginx
@@ -79,16 +80,47 @@ cleanup() {
 trap rollback ERR
 trap cleanup EXIT
 
-# Build as the checkout owner, never as root. No development dependencies are
-# added to the live environment; the test suite is run before this script.
-run_builder "$project_dir/backend/.venv/bin/pip" install --disable-pip-version-check -r "$project_dir/backend/requirements.txt"
+# Build as the checkout owner, never as root; the test suite runs before this script.
 engine_build_dir="$(mktemp -d /tmp/unison-release-build.XXXXXX)"
 chown "$owner" "$engine_build_dir"
 # During the first migration the old service still reads the checkout's .uc.
 # Build elsewhere so candidate verification cannot change its live behavior.
 run_builder env UNISON_OUTPUT="$engine_build_dir/evolution.uc" python3 "$project_dir/scripts/build_unison.py"
 run_builder npm --prefix "$project_dir/frontend" run build
-run_builder env RUN_ENGINE_TESTS=1 UNISON_PROGRAM="$engine_build_dir/evolution.uc" "$project_dir/backend/.venv/bin/python" -m unittest discover -s "$project_dir/backend" -p test_engine.py -v
+
+# Immutable, content-addressed runtimes shared by releases with identical inputs.
+# The live service never sees the development checkout or its virtualenv.
+install -d -m 0755 "$runtime_root"
+python_bin="$(readlink -f "$(command -v python3)")"
+[[ "$python_bin" == /usr/* ]]  # The service cannot see interpreters under /home.
+venv_hash="$( { sha256sum < "$project_dir/backend/requirements.lock"; "$python_bin" -VV; } | sha256sum | cut -c1-12)"
+venv_dir="$runtime_root/venv-$venv_hash"
+if [[ ! -f "$venv_dir/.complete" ]]; then
+  rm -rf -- "$venv_dir"
+  install -d -m 0755 -o "$owner" "$venv_dir"
+  run_builder "$python_bin" -m venv "$venv_dir"
+  # Wheels only, every file verified against the committed hashes.
+  run_builder "$venv_dir/bin/pip" install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: -r "$project_dir/backend/requirements.lock"
+  run_builder "$venv_dir/bin/pip" check
+  chown -R root:root "$venv_dir"
+  chmod -R go-w "$venv_dir"
+  touch "$venv_dir/.complete"
+fi
+tree_hash() { (cd "$1" && find . -type f ! -name .complete -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12); }
+ucm_hash="$(tree_hash "$project_dir/ucm-bin")"
+ucm_dir="$runtime_root/ucm-$ucm_hash"
+if [[ ! -f "$ucm_dir/.complete" ]]; then
+  rm -rf -- "$ucm_dir" "$ucm_dir.partial"
+  install -d -m 0755 "$ucm_dir.partial"
+  cp -R --preserve=mode "$project_dir/ucm-bin/." "$ucm_dir.partial/"
+  chown -R root:root "$ucm_dir.partial"
+  chmod -R go-w "$ucm_dir.partial"
+  [[ "$(tree_hash "$ucm_dir.partial")" == "$ucm_hash" ]]
+  touch "$ucm_dir.partial/.complete"
+  mv -T "$ucm_dir.partial" "$ucm_dir"
+fi
+[[ -x "$venv_dir/bin/uvicorn" && -x "$ucm_dir/ucm-bin" ]]
+run_builder env RUN_ENGINE_TESTS=1 UNISON_BIN="$ucm_dir/ucm-bin" UNISON_PROGRAM="$engine_build_dir/evolution.uc" "$venv_dir/bin/python" -m unittest discover -s "$project_dir/backend" -p test_engine.py -v
 [[ -s "$project_dir/frontend/dist/index.html" ]]
 # Explicitly set the parent mode: install -d otherwise applies the private
 # deployment umask to a newly created /opt/unison-backend parent.
@@ -124,7 +156,8 @@ for module in "$project_dir"/backend/*.py; do
 done
 install -m 0644 "${runtime_files[@]}" "$project_dir/backend/requirements.txt" "$project_dir/backend/capabilities.json" "$backend_release/"
 install -m 0644 "$engine_build_dir/evolution.uc" "$backend_release/evolution.uc"
-printf 'APP_REVISION=%s\n' "$revision" > "$backend_release/runtime.env"
+ln -s "$venv_dir" "$backend_release/venv"
+printf 'APP_REVISION=%s\nUNISON_BIN=%s\n' "$revision" "$ucm_dir/ucm-bin" > "$backend_release/runtime.env"
 chmod 0644 "$backend_release/runtime.env"
 sha256sum "$backend_release/evolution.uc" > "$backend_release/engine.sha256"
 chmod 0644 "$backend_release/engine.sha256"
@@ -135,8 +168,8 @@ chown unisonapp:unisonapp "$verification_dir"
 [[ -z "$(ss -H -ltn 'sport = :18791')" ]]
 setsid runuser -u unisonapp -- env PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1 \
   DB_PATH="$verification_dir/evolution.db" PUBLIC_ORIGIN=http://127.0.0.1:18791 \
-  ALLOWED_HOSTS=127.0.0.1 APP_REVISION="$revision" UNISON_BIN="$project_dir/ucm-bin/ucm-bin" UNISON_PROGRAM="$backend_release/evolution.uc" \
-  "$project_dir/backend/.venv/bin/uvicorn" main:app --app-dir "$backend_release" --host 127.0.0.1 --port 18791 --ws websockets --no-access-log > "$verification_dir/server.log" 2>&1 &
+  ALLOWED_HOSTS=127.0.0.1 APP_REVISION="$revision" UNISON_BIN="$ucm_dir/ucm-bin" UNISON_PROGRAM="$backend_release/evolution.uc" \
+  "$backend_release/venv/bin/uvicorn" main:app --app-dir "$backend_release" --host 127.0.0.1 --port 18791 --ws websockets --no-access-log > "$verification_dir/server.log" 2>&1 &
 candidate_pid=$!
 for ((attempt=0; attempt<30; attempt++)); do
   if curl -fsS --max-time 1 http://127.0.0.1:18791/api/health >/dev/null 2>&1; then break; fi
@@ -190,4 +223,13 @@ assert json.loads((backup / 'public-health.json').read_text())['revision'] == sy
 assert json.loads((backup / 'public-release.json').read_text())['revision'] == sys.argv[2]
 PY
 armed=0
-printf 'Deployed %s\nFrontend: %s\nAPI: %s\nPrivate backup: %s\n' "$revision" "$frontend_release" "$backend_release" "$backup_dir"
+
+# Post-release housekeeping: failures are reported but never undo a verified release.
+if ! { install -m 0644 "$project_dir/infra/systemd/unison-backup.service" /etc/systemd/system/unison-backup.service \
+    && install -m 0644 "$project_dir/infra/systemd/unison-backup.timer" /etc/systemd/system/unison-backup.timer \
+    && systemctl daemon-reload && systemctl enable --now unison-backup.timer; }; then
+  echo 'Daily backup timer was not enabled; inspect unison-backup.timer.' >&2
+fi
+python3 "$project_dir/scripts/prune_releases.py" --apply --protect "$previous_backend" --protect "$previous_frontend" --protect "$backup_dir" > "$backup_dir/prune.json" \
+  || echo 'Release pruning failed; the deployment itself succeeded.' >&2
+printf 'Deployed %s\nFrontend: %s\nAPI: %s\nRuntime: %s %s\nPrivate backup: %s\n' "$revision" "$frontend_release" "$backend_release" "$venv_dir" "$ucm_dir" "$backup_dir"

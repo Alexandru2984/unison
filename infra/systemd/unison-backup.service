@@ -1,0 +1,42 @@
+[Unit]
+Description=Private daily backup of the Idea Evolution database
+ConditionPathExists=/opt/unison-backend/current/backup.py
+ConditionPathExists=/var/lib/unison-backend/evolution.db
+
+[Service]
+Type=oneshot
+User=unisonapp
+Group=unisonapp
+UMask=0077
+# Snapshots live outside the service state directory and stay private.
+StateDirectory=unison-backups
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/unison-backend
+ExecStart=/usr/bin/python3 -I /opt/unison-backend/current/backup.py --db /var/lib/unison-backend/evolution.db --dir /var/lib/unison-backups --keep 14
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=5min
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+LimitCORE=0
+MemoryMax=256M

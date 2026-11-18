@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily private backup of the Idea Evolution database
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=20min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
